@@ -1,371 +1,513 @@
-import { v4 as uuidv4 } from 'uuid';
-import { WebSocket } from 'ws';
-import { buildContents, StreamCallbacks, streamGeneration } from '../gemini/client';
-import { getFullSystemPrompt } from '../gemini/systemPrompt';
+import { v4 as uuidv4 } from "uuid";
+import { WebSocket } from "ws";
 import {
-    AssistantTokenMessage,
-    Citation,
-    ERROR_CODES,
-    FinalResponseMessage,
-    PROTOCOL_VERSION,
-    RunErrorMessage,
-    RunStartMessage,
-    StatusMessage,
-    ToolCallMessage,
-    ToolErrorMessage,
-    ToolResultMessage,
-} from '../types/messages';
-import { validateEnvelope, validateRunStart } from './protocol';
+  buildContents,
+  type ConversationTurn,
+  type StreamCallbacks,
+  streamGeneration,
+} from "../gemini/client.ts";
+import { getFullSystemPrompt } from "../gemini/systemPrompt.ts";
+import {
+  type AssistantTokenMessage,
+  type Citation,
+  ERROR_CODES,
+  type FinalResponseMessage,
+  PROTOCOL_VERSION,
+  type RunErrorMessage,
+  type RunStartMessage,
+  type StatusMessage,
+  type ToolCallMessage,
+  type ToolErrorMessage,
+  type ToolResultMessage,
+} from "../types/messages.ts";
+import { validateEnvelope, validateRunStart } from "./protocol.ts";
 
 type RunState =
-    | 'WAIT_RUN_START'
-    | 'PREPARE_MODEL'
-    | 'STREAM_OUTPUT'
-    | 'HANDLE_TOOL_CALL'
-    | 'FINALIZE'
-    | 'CLOSE';
+  | "WAIT_RUN_START"
+  | "PREPARE_MODEL"
+  | "STREAM_OUTPUT"
+  | "HANDLE_TOOL_CALL"
+  | "FINALIZE"
+  | "CLOSE";
 
 interface PendingToolCall {
-    call_id: string;
-    tool: string;
-    args: Record<string, unknown>;
-    resolve: (result: unknown) => void;
-    reject: (error: Error) => void;
-    timeoutId: ReturnType<typeof setTimeout>;
+  call_id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
 }
 
 export class RunManager {
-    private socket: WebSocket;
-    private state: RunState = 'WAIT_RUN_START';
-    private runId: string = '';
-    private seq: number = 0;
-    private appVersion: string = 'backend-1.0';
-    private pendingToolCalls: Map<string, PendingToolCall> = new Map();
-    private toolCallCount: number = 0;
-    private toolErrorCount: number = 0;
-    private fullResponseText: string = '';
-    private citations: Citation[] = [];
+  private socket: WebSocket;
+  private state: RunState = "WAIT_RUN_START";
+  private runId: string = "";
+  private seq: number = 0;
+  private appVersion: string = "backend-1.0";
+  private pendingToolCalls: Map<string, PendingToolCall> = new Map();
+  private toolCallCount: number = 0;
+  private toolErrorCount: number = 0;
+  private fullResponseText: string = "";
+  private citations: Citation[] = [];
+  private connectionId: string;
 
-    constructor(socket: WebSocket) {
-        this.socket = socket;
-        this.setupHandlers();
+  constructor(socket: WebSocket, connectionId = "ws") {
+    this.socket = socket;
+    this.connectionId = connectionId;
+    this.setupHandlers();
+  }
+
+  private setupHandlers(): void {
+    this.socket.on("message", (data) => this.handleMessage(data));
+    this.socket.on("close", () => this.cleanup());
+    this.socket.on("error", (err) => this.handleError(err));
+  }
+
+  private handleMessage(data: unknown): void {
+    try {
+      const msg = JSON.parse((data as Buffer | string).toString());
+      this.logInbound(msg);
+      const envValidation = validateEnvelope(msg);
+
+      if (!envValidation.valid) {
+        this.sendError(
+          envValidation.error!.code,
+          envValidation.error!.message,
+          false,
+        );
+        return;
+      }
+
+      switch (msg.type) {
+        case "run_start":
+          this.handleRunStart(msg as RunStartMessage);
+          break;
+        case "tool_result":
+          this.handleToolResult(msg as ToolResultMessage);
+          break;
+        case "tool_error":
+          this.handleToolError(msg as ToolErrorMessage);
+          break;
+        default:
+          this.sendError(
+            ERROR_CODES.INVALID_MESSAGE,
+            `Unknown message type: ${msg.type}`,
+            false,
+          );
+      }
+    } catch (e) {
+      this.log("IN_PARSE_ERROR", {
+        error: (e as Error).message,
+      });
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        "Failed to parse message",
+        false,
+      );
+    }
+  }
+
+  private async handleRunStart(msg: RunStartMessage): Promise<void> {
+    if (this.state !== "WAIT_RUN_START") {
+      this.sendError(ERROR_CODES.INVALID_MESSAGE, "Run already started", false);
+      return;
     }
 
-    private setupHandlers(): void {
-        this.socket.on('message', (data) => this.handleMessage(data));
-        this.socket.on('close', () => this.cleanup());
-        this.socket.on('error', (err) => this.handleError(err));
+    const validation = validateRunStart(msg);
+    if (!validation.valid) {
+      this.sendError(validation.error!.code, validation.error!.message, false);
+      return;
     }
 
-    private handleMessage(data: unknown): void {
-        try {
-            const msg = JSON.parse((data as Buffer | string).toString());
-            const envValidation = validateEnvelope(msg);
+    this.runId = msg.run_id;
+    this.state = "PREPARE_MODEL";
+    this.sendStatus("preparing_model", "Building request...");
 
-            if (!envValidation.valid) {
-                this.sendError(envValidation.error!.code, envValidation.error!.message, false);
-                return;
-            }
+    try {
+      const contents = buildContents(
+        getFullSystemPrompt(),
+        msg.user.text,
+        msg.attachments,
+        this.mapConversationToTurns(msg.context?.messages),
+        msg.context?.user_time,
+      );
 
-            switch (msg.type) {
-                case 'run_start':
-                    this.handleRunStart(msg as RunStartMessage);
-                    break;
-                case 'tool_result':
-                    this.handleToolResult(msg as ToolResultMessage);
-                    break;
-                case 'tool_error':
-                    this.handleToolError(msg as ToolErrorMessage);
-                    break;
-                default:
-                    this.sendError(ERROR_CODES.INVALID_MESSAGE, `Unknown message type: ${msg.type}`, false);
-            }
-        } catch (e) {
-            this.sendError(ERROR_CODES.INVALID_MESSAGE, 'Failed to parse message', false);
-        }
+      this.state = "STREAM_OUTPUT";
+      this.sendStatus("generating", "Generating response...");
+
+      const callbacks: StreamCallbacks = {
+        onToken: (text) => this.sendToken(text),
+        onToolCall: (name, args) => this.relayToolCall(name, args),
+        onComplete: (fullText) =>
+          this.handleComplete(fullText, msg.user.message_id),
+        onError: (error) => this.handleStreamError(error),
+      };
+
+      await streamGeneration(contents, callbacks);
+    } catch (error) {
+      this.sendError(
+        ERROR_CODES.MODEL_UPSTREAM_ERROR,
+        (error as Error).message,
+        true,
+      );
     }
+  }
 
-    private async handleRunStart(msg: RunStartMessage): Promise<void> {
-        if (this.state !== 'WAIT_RUN_START') {
-            this.sendError(ERROR_CODES.INVALID_MESSAGE, 'Run already started', false);
-            return;
-        }
+  private async relayToolCall(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    this.state = "HANDLE_TOOL_CALL";
+    this.toolCallCount++;
 
-        const validation = validateRunStart(msg);
-        if (!validation.valid) {
-            this.sendError(validation.error!.code, validation.error!.message, false);
-            return;
-        }
+    const call_id = uuidv4();
+    const timeout_ms = 15000;
 
-        this.runId = msg.run_id;
-        this.state = 'PREPARE_MODEL';
-        this.sendStatus('preparing_model', 'Building request...');
-
-        try {
-            const contents = buildContents(
-                getFullSystemPrompt(),
-                msg.user.text,
-                msg.attachments
-            );
-
-            this.state = 'STREAM_OUTPUT';
-            this.sendStatus('generating', 'Generating response...');
-
-            const callbacks: StreamCallbacks = {
-                onToken: (text) => this.sendToken(text),
-                onToolCall: (name, args) => this.relayToolCall(name, args),
-                onComplete: (fullText) => this.handleComplete(fullText, msg.user.message_id),
-                onError: (error) => this.handleStreamError(error),
-            };
-
-            await streamGeneration(contents, callbacks);
-        } catch (error) {
-            this.sendError(ERROR_CODES.MODEL_UPSTREAM_ERROR, (error as Error).message, true);
-        }
-    }
-
-    private async relayToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
-        this.state = 'HANDLE_TOOL_CALL';
-        this.toolCallCount++;
-
-        const call_id = uuidv4();
-        const timeout_ms = 15000;
-
-        return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                this.pendingToolCalls.delete(call_id);
-                this.toolErrorCount++;
-                this.sendError(ERROR_CODES.TOOL_TIMEOUT, `Tool call timed out: ${name}`, true);
-                reject(new Error('Tool call timeout'));
-            }, timeout_ms);
-
-            this.pendingToolCalls.set(call_id, {
-                call_id,
-                tool: name,
-                args,
-                resolve,
-                reject,
-                timeoutId,
-            });
-
-            this.sendToolCall(call_id, name, args, timeout_ms);
-        });
-    }
-
-    private handleToolResult(msg: ToolResultMessage): void {
-        const pending = this.pendingToolCalls.get(msg.call_id);
-        if (!pending) return;
-
-        clearTimeout(pending.timeoutId);
-        this.pendingToolCalls.delete(msg.call_id);
-        this.state = 'STREAM_OUTPUT';
-        this.collectCitationFromToolResult(msg.tool, pending.args, msg.result.data);
-
-        pending.resolve(msg.result.data);
-    }
-
-    private handleToolError(msg: ToolErrorMessage): void {
-        const pending = this.pendingToolCalls.get(msg.call_id);
-        if (!pending) return;
-
-        clearTimeout(pending.timeoutId);
-        this.pendingToolCalls.delete(msg.call_id);
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingToolCalls.delete(call_id);
         this.toolErrorCount++;
-        this.state = 'STREAM_OUTPUT';
+        this.sendError(
+          ERROR_CODES.TOOL_TIMEOUT,
+          `Tool call timed out: ${name}`,
+          true,
+        );
+        reject(new Error("Tool call timeout"));
+      }, timeout_ms);
 
-        pending.reject(new Error(msg.error.message));
-    }
+      this.pendingToolCalls.set(call_id, {
+        call_id,
+        tool: name,
+        args,
+        resolve,
+        reject,
+        timeoutId,
+      });
 
-    private handleComplete(fullText: string, userMessageId: string): void {
-        this.state = 'FINALIZE';
-        this.fullResponseText = fullText;
+      this.sendToolCall(call_id, name, args, timeout_ms);
+    });
+  }
 
-        const finalMsg: FinalResponseMessage = {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: this.appVersion,
-            type: 'final_response',
-            run_id: this.runId,
-            seq: this.nextSeq(),
-            message: {
-                message_id: uuidv4(),
-                role: 'assistant',
-                text: fullText,
-                created_at: Date.now(),
-            },
-            citations: this.citations,
-            tool_summary: {
-                calls: this.toolCallCount,
-                errors: this.toolErrorCount,
-            },
-        };
+  private handleToolResult(msg: ToolResultMessage): void {
+    const pending = this.pendingToolCalls.get(msg.call_id);
+    if (!pending) return;
 
-        this.send(finalMsg);
-        this.close();
-    }
+    clearTimeout(pending.timeoutId);
+    this.pendingToolCalls.delete(msg.call_id);
+    this.state = "STREAM_OUTPUT";
+    this.collectCitationFromToolResult(msg.tool, pending.args, msg.result.data);
 
-    private handleStreamError(error: Error): void {
-        if (this.state === 'CLOSE') return;
-        this.sendError(ERROR_CODES.MODEL_UPSTREAM_ERROR, error.message, true);
-    }
+    pending.resolve(msg.result.data);
+  }
 
-    private collectCitationFromToolResult(
-        tool: string,
-        args: Record<string, unknown>,
-        data: unknown
-    ): void {
-        switch (tool) {
-            case 'search_memory': {
-                const items = (data as { items?: Array<{ id?: string }> } | undefined)?.items ?? [];
-                for (const item of items.slice(0, 3)) {
-                    if (item.id) {
-                        this.pushCitation({ kind: 'memory', memory_item_id: item.id });
-                    }
+  private handleToolError(msg: ToolErrorMessage): void {
+    const pending = this.pendingToolCalls.get(msg.call_id);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutId);
+    this.pendingToolCalls.delete(msg.call_id);
+    this.toolErrorCount++;
+    this.state = "STREAM_OUTPUT";
+
+    pending.reject(new Error(msg.error.message));
+  }
+
+  private handleComplete(fullText: string, userMessageId: string): void {
+    this.state = "FINALIZE";
+    this.fullResponseText = fullText;
+
+    const finalMsg: FinalResponseMessage = {
+      protocol_version: PROTOCOL_VERSION,
+      app_version: this.appVersion,
+      type: "final_response",
+      run_id: this.runId,
+      seq: this.nextSeq(),
+      message: {
+        message_id: uuidv4(),
+        role: "assistant",
+        text: fullText,
+        created_at: Date.now(),
+      },
+      citations: this.citations,
+      tool_summary: {
+        calls: this.toolCallCount,
+        errors: this.toolErrorCount,
+      },
+    };
+
+    this.send(finalMsg);
+    this.close(1000, "run_complete");
+  }
+
+  private handleStreamError(error: Error): void {
+    if (this.state === "CLOSE") return;
+    this.sendError(ERROR_CODES.MODEL_UPSTREAM_ERROR, error.message, true);
+  }
+
+  private collectCitationFromToolResult(
+    tool: string,
+    args: Record<string, unknown>,
+    data: unknown,
+  ): void {
+    switch (tool) {
+      case "search_memory": {
+        const items =
+          (
+            data as
+              | {
+                  items?: Array<{
+                    id?: string;
+                    source_type?: string;
+                    memory_item_id?: string | null;
+                    attachment_id?: string | null;
+                  }>;
                 }
-                break;
-            }
-            case 'search_attachments': {
-                const attachments = (data as { attachments?: Array<{ id?: string; type?: string }> } | undefined)?.attachments ?? [];
-                for (const att of attachments.slice(0, 3)) {
-                    if (att.id) {
-                        this.pushCitation({
-                            kind: 'attachment',
-                            attachment_id: att.id,
-                            note: att.type === 'audio' ? 'Voice Note' : att.type === 'image' ? 'Photo' : 'Source',
-                        });
-                    }
-                }
-                break;
-            }
-            case 'get_attachment_bundle': {
-                const bundle = data as {
-                    attachment?: { id?: string; type?: string };
-                    metadata?: Array<{ kind?: string }>;
-                } | undefined;
-                const attachmentId = bundle?.attachment?.id || (args.attachment_id as string | undefined);
-                if (attachmentId) {
-                    const metadataKind = bundle?.metadata?.[0]?.kind;
-                    this.pushCitation({
-                        kind: 'attachment',
-                        attachment_id: attachmentId,
-                        metadata_kind: metadataKind,
-                        note: metadataKind === 'transcript' ? 'Voice Note' : metadataKind === 'scene' ? 'Photo' : 'Source',
-                    });
-                }
-                break;
-            }
-            case 'get_message_with_attachments': {
-                const messageId = (data as { message?: { id?: string } } | undefined)?.message?.id
-                    || (args.message_id as string | undefined);
-                if (messageId) {
-                    this.pushCitation({ kind: 'message', message_id: messageId });
-                }
-                break;
-            }
+              | undefined
+          )?.items ?? [];
+        for (const item of items.slice(0, 3)) {
+          if (item.source_type === "attachment_metadata" && item.attachment_id) {
+            this.pushCitation({
+              kind: "attachment",
+              attachment_id: item.attachment_id,
+            });
+          } else if (item.memory_item_id || item.id) {
+            this.pushCitation({
+              kind: "memory",
+              memory_item_id: item.memory_item_id || item.id,
+            });
+          }
         }
-    }
-
-    private pushCitation(citation: Citation): void {
-        const key = [
-            citation.kind,
-            citation.attachment_id ?? '',
-            citation.message_id ?? '',
-            citation.memory_item_id ?? '',
-            citation.metadata_kind ?? '',
-        ].join('|');
-        const exists = this.citations.some((c) => (
-            [
-                c.kind,
-                c.attachment_id ?? '',
-                c.message_id ?? '',
-                c.memory_item_id ?? '',
-                c.metadata_kind ?? '',
-            ].join('|') === key
-        ));
-        if (!exists) {
-            this.citations.push(citation);
+        break;
+      }
+      case "search_attachments": {
+        const attachments =
+          (
+            data as
+              | { attachments?: Array<{ id?: string; type?: string }> }
+              | undefined
+          )?.attachments ?? [];
+        for (const att of attachments.slice(0, 3)) {
+          if (att.id) {
+            this.pushCitation({
+              kind: "attachment",
+              attachment_id: att.id,
+              note:
+                att.type === "audio"
+                  ? "Voice Note"
+                  : att.type === "image"
+                    ? "Photo"
+                    : "Source",
+            });
+          }
         }
-    }
-
-    private handleError(error: Error): void {
-        console.error('WebSocket error:', error);
-        this.cleanup();
-    }
-
-    // Message sending helpers
-    private nextSeq(): number {
-        return ++this.seq;
-    }
-
-    private send(msg: unknown): void {
-        if (this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify(msg));
+        break;
+      }
+      case "get_attachment_bundle": {
+        const bundle = data as
+          | {
+              attachment?: { id?: string; type?: string };
+              metadata?: Array<{ kind?: string }>;
+            }
+          | undefined;
+        const attachmentId =
+          bundle?.attachment?.id || (args.attachment_id as string | undefined);
+        if (attachmentId) {
+          const metadataKind = bundle?.metadata?.[0]?.kind;
+          this.pushCitation({
+            kind: "attachment",
+            attachment_id: attachmentId,
+            metadata_kind: metadataKind,
+            note:
+              metadataKind === "transcript"
+                ? "Voice Note"
+                : metadataKind === "scene"
+                  ? "Photo"
+                  : "Source",
+          });
         }
-    }
-
-    private sendToken(text: string): void {
-        const msg: AssistantTokenMessage = {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: this.appVersion,
-            type: 'assistant_token',
-            run_id: this.runId,
-            seq: this.nextSeq(),
-            text,
-        };
-        this.send(msg);
-    }
-
-    private sendStatus(stage: string, detail?: string): void {
-        const msg: StatusMessage = {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: this.appVersion,
-            type: 'status',
-            run_id: this.runId,
-            seq: this.nextSeq(),
-            stage,
-            detail,
-        };
-        this.send(msg);
-    }
-
-    private sendToolCall(call_id: string, tool: string, args: Record<string, unknown>, timeout_ms: number): void {
-        const msg: ToolCallMessage = {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: this.appVersion,
-            type: 'tool_call',
-            run_id: this.runId,
-            seq: this.nextSeq(),
-            call_id,
-            tool,
-            args,
-            expects_result: true,
-            timeout_ms,
-        };
-        this.send(msg);
-    }
-
-    private sendError(code: string, message: string, retryable: boolean): void {
-        const msg: RunErrorMessage = {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: this.appVersion,
-            type: 'run_error',
-            run_id: this.runId || 'unknown',
-            seq: this.nextSeq(),
-            error: { code, message, retryable },
-        };
-        this.send(msg);
-        this.close();
-    }
-
-    private close(): void {
-        this.state = 'CLOSE';
-        this.socket.close();
-    }
-
-    private cleanup(): void {
-        for (const pending of this.pendingToolCalls.values()) {
-            clearTimeout(pending.timeoutId);
-            pending.reject(new Error('Connection closed'));
+        break;
+      }
+      case "get_message_with_attachments": {
+        const messageId =
+          (data as { message?: { id?: string } } | undefined)?.message?.id ||
+          (args.message_id as string | undefined);
+        if (messageId) {
+          this.pushCitation({ kind: "message", message_id: messageId });
         }
-        this.pendingToolCalls.clear();
+        break;
+      }
     }
+  }
+
+  private pushCitation(citation: Citation): void {
+    const key = [
+      citation.kind,
+      citation.attachment_id ?? "",
+      citation.message_id ?? "",
+      citation.memory_item_id ?? "",
+      citation.metadata_kind ?? "",
+    ].join("|");
+    const exists = this.citations.some(
+      (c) =>
+        [
+          c.kind,
+          c.attachment_id ?? "",
+          c.message_id ?? "",
+          c.memory_item_id ?? "",
+          c.metadata_kind ?? "",
+        ].join("|") === key,
+    );
+    if (!exists) {
+      this.citations.push(citation);
+    }
+  }
+
+  private handleError(error: Error): void {
+    this.log("WS_ERROR", { message: error.message });
+    this.cleanup();
+  }
+
+  private mapConversationToTurns(messages: unknown): ConversationTurn[] {
+    if (!Array.isArray(messages)) return [];
+
+    return messages.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const maybe = item as {
+        role?: unknown;
+        text?: unknown;
+      };
+      if (maybe.role !== "user" && maybe.role !== "assistant") return [];
+      if (typeof maybe.text !== "string") return [];
+      const text = maybe.text.trim();
+      if (!text) return [];
+      return [{ role: maybe.role, text }];
+    });
+  }
+
+  // Message sending helpers
+  private nextSeq(): number {
+    return ++this.seq;
+  }
+
+  private send(msg: unknown): void {
+    if (this.socket.readyState === WebSocket.OPEN) {
+      this.logOutbound(msg);
+      this.socket.send(JSON.stringify(msg));
+    }
+  }
+
+  private sendToken(text: string): void {
+    const msg: AssistantTokenMessage = {
+      protocol_version: PROTOCOL_VERSION,
+      app_version: this.appVersion,
+      type: "assistant_token",
+      run_id: this.runId,
+      seq: this.nextSeq(),
+      text,
+    };
+    this.send(msg);
+  }
+
+  private sendStatus(stage: string, detail?: string): void {
+    const msg: StatusMessage = {
+      protocol_version: PROTOCOL_VERSION,
+      app_version: this.appVersion,
+      type: "status",
+      run_id: this.runId,
+      seq: this.nextSeq(),
+      stage,
+      detail,
+    };
+    this.send(msg);
+  }
+
+  private sendToolCall(
+    call_id: string,
+    tool: string,
+    args: Record<string, unknown>,
+    timeout_ms: number,
+  ): void {
+    const msg: ToolCallMessage = {
+      protocol_version: PROTOCOL_VERSION,
+      app_version: this.appVersion,
+      type: "tool_call",
+      run_id: this.runId,
+      seq: this.nextSeq(),
+      call_id,
+      tool,
+      args,
+      expects_result: true,
+      timeout_ms,
+    };
+    this.send(msg);
+  }
+
+  private sendError(code: string, message: string, retryable: boolean): void {
+    const msg: RunErrorMessage = {
+      protocol_version: PROTOCOL_VERSION,
+      app_version: this.appVersion,
+      type: "run_error",
+      run_id: this.runId || "unknown",
+      seq: this.nextSeq(),
+      error: { code, message, retryable },
+    };
+    this.send(msg);
+    this.close(1011, "run_error");
+  }
+
+  private close(code = 1000, reason?: string): void {
+    this.state = "CLOSE";
+    this.socket.close(code, reason);
+  }
+
+  private cleanup(): void {
+    this.log("CLEANUP", {
+      pending_tool_calls: this.pendingToolCalls.size,
+    });
+    for (const pending of this.pendingToolCalls.values()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(new Error("Connection closed"));
+    }
+    this.pendingToolCalls.clear();
+  }
+
+  private logInbound(msg: unknown): void {
+    this.log("IN", msg);
+  }
+
+  private logOutbound(msg: unknown): void {
+    this.log("OUT", msg);
+  }
+
+  private log(direction: string, payload: unknown): void {
+    const redacted = this.redactForLogs(payload);
+    console.log(
+      `[ws:${this.connectionId}] ${direction} ${JSON.stringify(redacted)}`,
+    );
+  }
+
+  private redactForLogs(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.redactForLogs(item));
+    }
+
+    if (value && typeof value === "object") {
+      const obj = value as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+
+      for (const [key, val] of Object.entries(obj)) {
+        if (key.toLowerCase() === "base64") {
+          const length = typeof val === "string" ? val.length : 0;
+          out[key] = `[REDACTED_BASE64 length=${length}]`;
+          continue;
+        }
+        out[key] = this.redactForLogs(val);
+      }
+
+      return out;
+    }
+
+    return value;
+  }
 }

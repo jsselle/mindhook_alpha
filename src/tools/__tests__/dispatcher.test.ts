@@ -4,13 +4,19 @@ import { executeToolCall, TOOL_ERROR_CODES, ToolError } from '../dispatcher';
 jest.mock('../../api/deviceWriteApi');
 jest.mock('../../api/deviceReadApi');
 jest.mock('expo-sqlite');
+jest.mock('../../utils/uuid', () => ({
+    generateUUID: jest.fn(),
+}));
 
 import * as readApi from '../../api/deviceReadApi';
 import * as writeApi from '../../api/deviceWriteApi';
+import { generateUUID } from '../../utils/uuid';
 
 describe('Tool Dispatcher', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        (readApi.attachmentExists as jest.Mock).mockResolvedValue(true);
+        (generateUUID as jest.Mock).mockReturnValue('generated-id-1');
     });
 
     describe('schema_version validation', () => {
@@ -54,6 +60,9 @@ describe('Tool Dispatcher', () => {
                 attachment_id: 'att-1',
                 model: 'gemini-3',
                 kind: 'transcript',
+                text: null,
+                tags: null,
+                event_at: null,
                 payload: { text: 'hello' },
                 created_at: 1700000000000,
             });
@@ -71,6 +80,38 @@ describe('Tool Dispatcher', () => {
             });
 
             expect(result).toEqual({ metadata_id: 'meta-1' });
+        });
+
+        it('generates metadata_id when omitted', async () => {
+            const result = await executeToolCall('store_attachment_metadata', {
+                attachment_id: 'att-1',
+                model: 'gemini-3',
+                kind: 'transcript',
+                payload: {},
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(writeApi.insertAttachmentMetadata).toHaveBeenCalledWith(
+                expect.objectContaining({ id: 'generated-id-1' })
+            );
+            expect(result).toEqual({ metadata_id: 'generated-id-1' });
+        });
+
+        it('throws INVALID_ARGS when attachment_id does not exist', async () => {
+            (readApi.attachmentExists as jest.Mock).mockResolvedValue(false);
+
+            await expect(
+                executeToolCall('store_attachment_metadata', {
+                    metadata_id: 'meta-1',
+                    attachment_id: 'missing-att',
+                    model: 'gemini-3',
+                    kind: 'transcript',
+                    payload: {},
+                    created_at: 1700000000000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
         });
     });
 
@@ -95,12 +136,32 @@ describe('Tool Dispatcher', () => {
                 subject: 'keys',
                 predicate: 'last_seen',
                 object: 'kitchen',
+                text: null,
+                tags_json: null,
+                event_at: null,
                 time_anchor: null,
                 confidence: 0.9,
                 source_attachment_id: null,
                 source_message_id: null,
                 created_at: 1700000000000,
             });
+        });
+
+        it('generates memory_item_id when omitted', async () => {
+            const result = await executeToolCall('store_memory_item', {
+                type: 'object_location',
+                subject: 'keys',
+                predicate: 'last_seen',
+                object: 'kitchen',
+                confidence: 0.9,
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(writeApi.insertMemoryItem).toHaveBeenCalledWith(
+                expect.objectContaining({ id: 'generated-id-1' })
+            );
+            expect(result).toEqual({ memory_item_id: 'generated-id-1' });
         });
     });
 
@@ -127,61 +188,119 @@ describe('Tool Dispatcher', () => {
                 created_at: 1700000000000,
             });
         });
+
+        it('generates entity_index_id when omitted', async () => {
+            const result = await executeToolCall('index_entity', {
+                entity: 'kitchen',
+                source_type: 'attachment',
+                source_id: 'att-1',
+                weight: 0.8,
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(writeApi.insertEntityIndex).toHaveBeenCalledWith(
+                expect.objectContaining({ id: 'generated-id-1' })
+            );
+            expect(result).toEqual({ entity_index_id: 'generated-id-1' });
+        });
     });
 
     describe('search_memory', () => {
-        it('calls searchMemory and returns items', async () => {
+        it('calls searchMemory and returns items with hydrated attachment bundle data', async () => {
             (readApi.searchMemory as jest.Mock).mockResolvedValue([
-                { id: 'm1', subject: 'keys', predicate: 'last_seen', object: 'kitchen' },
+                {
+                    id: 'm1',
+                    source_type: 'memory',
+                    memory_item_id: 'm1',
+                    metadata_id: null,
+                    attachment_id: 'att-1',
+                    text: 'keys last seen in kitchen',
+                    tags: ['keys', 'kitchen'],
+                    event_at: 1700000000000,
+                    created_at: 1700000000001,
+                    score: 42,
+                },
             ]);
+            (readApi.getAttachmentBundle as jest.Mock).mockResolvedValue({
+                attachment: { id: 'att-1', type: 'image' },
+                metadata: [{ kind: 'scene', payload: { description: 'keys on kitchen counter' } }],
+            });
 
             const result = await executeToolCall('search_memory', {
-                subject: 'keys',
+                text: 'keys',
                 limit: 5,
                 schema_version: '1',
             });
 
             expect(result).toEqual({
-                items: [{ id: 'm1', subject: 'keys', predicate: 'last_seen', object: 'kitchen' }],
+                items: [
+                    {
+                        id: 'm1',
+                        source_type: 'memory',
+                        memory_item_id: 'm1',
+                        metadata_id: null,
+                        attachment_id: 'att-1',
+                        text: 'keys last seen in kitchen',
+                        tags: ['keys', 'kitchen'],
+                        event_at: 1700000000000,
+                        created_at: 1700000000001,
+                        score: 42,
+                        attachment_bundle: {
+                            attachment: { id: 'att-1', type: 'image' },
+                            metadata: [{ kind: 'scene', payload: { description: 'keys on kitchen counter' } }],
+                        },
+                    },
+                ],
             });
+            expect(readApi.getAttachmentBundle).toHaveBeenCalledWith({ attachment_id: 'att-1' });
+        });
+
+        it('does not fetch attachment bundles when search results have no attachment ids', async () => {
+            (readApi.searchMemory as jest.Mock).mockResolvedValue([
+                {
+                    id: 'm1',
+                    source_type: 'memory',
+                    memory_item_id: 'm1',
+                    metadata_id: null,
+                    attachment_id: null,
+                    text: 'keys last seen in kitchen',
+                    tags: ['keys', 'kitchen'],
+                    event_at: 1700000000000,
+                    created_at: 1700000000001,
+                    score: 42,
+                },
+            ]);
+
+            await executeToolCall('search_memory', {
+                text: 'keys',
+                limit: 5,
+                schema_version: '1',
+            });
+
+            expect(readApi.getAttachmentBundle).not.toHaveBeenCalled();
         });
 
         it('passes optional filters correctly', async () => {
             (readApi.searchMemory as jest.Mock).mockResolvedValue([]);
 
             await executeToolCall('search_memory', {
-                subject: 'wallet',
-                type: 'object_location',
-                recent_days: 7,
+                text: 'wallet',
+                tags: ['wallet'],
+                tag_mode: 'or',
+                date_from: 1700000000000,
+                date_to: 1700000005000,
                 limit: 10,
                 schema_version: '1',
             });
 
             expect(readApi.searchMemory).toHaveBeenCalledWith({
-                subject: 'wallet',
-                type: 'object_location',
-                recent_days: 7,
+                text: 'wallet',
+                tags: ['wallet'],
+                tag_mode: 'or',
+                date_from: 1700000000000,
+                date_to: 1700000005000,
                 limit: 10,
-            });
-        });
-    });
-
-    describe('search_attachments', () => {
-        it('calls searchAttachments with entities', async () => {
-            (readApi.searchAttachments as jest.Mock).mockResolvedValue([{ id: 'att-1' }]);
-
-            const result = await executeToolCall('search_attachments', {
-                entities: ['keys', 'kitchen'],
-                limit: 5,
-                schema_version: '1',
-            });
-
-            expect(result).toEqual({ attachments: [{ id: 'att-1' }] });
-            expect(readApi.searchAttachments).toHaveBeenCalledWith({
-                entities: ['keys', 'kitchen'],
-                types: null,
-                recent_days: null,
-                limit: 5,
             });
         });
     });

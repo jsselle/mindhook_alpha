@@ -21,7 +21,26 @@ export interface RunStartMessage extends MessageEnvelope {
     attachments: AttachmentPayload[];
     context: {
         recent_message_count: number;
+        messages?: ConversationMessage[];
+        user_time?: UserTimeContext;
     };
+}
+
+export interface UserTimeContext {
+    epoch_ms: number;
+    timezone: string;
+    /**
+     * Minutes offset from UTC where positive values are ahead of UTC.
+     * Example: -480 for America/Los_Angeles during PST.
+     */
+    utc_offset_minutes: number;
+    local_iso: string;
+}
+
+export interface ConversationMessage {
+    role: 'user' | 'assistant';
+    text: string;
+    created_at: number;
 }
 
 export interface AttachmentPayload {

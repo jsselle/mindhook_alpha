@@ -26,14 +26,14 @@ describe('Keys Demo Scenario', () => {
             /**
              * Manual Test Steps:
              * 1. With audio attachment ready, press send button
-             * 2. Observe activity strip states
+             * 2. Observe inline status messages in chat
              *
-             * Expected Activity Strip Sequence:
-             * - "Connecting..."
+             * Expected Inline Status Sequence:
+             * - "Preparing..."
              * - "Transcribing audio..."
              * - "Storing information..."
              * - "Indexing..."
-             * - Strip hides when complete
+             * - Status message disappears when complete
              *
              * Database Verification:
              * - attachment_metadata table has entry with kind='transcript'
@@ -53,14 +53,14 @@ describe('Keys Demo Scenario', () => {
              * Manual Test Steps:
              * 1. Type: "Where are my keys?"
              * 2. Press send
-             * 3. Observe activity strip and response
+             * 3. Observe inline status messages and response
              *
-             * Expected Activity Strip Sequence:
-             * - "Connecting..."
+             * Expected Inline Status Sequence:
+             * - "Preparing..."
              * - "Thinking..."
              * - "Searching memory..."
              * - "Loading attachment..."
-             * - Strip hides when complete
+             * - Status message disappears when complete
              *
              * Expected Response:
              * - Message mentions "kitchen counter" and/or "coffee maker"

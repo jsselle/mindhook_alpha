@@ -60,8 +60,13 @@ export const useAudioRecorder = (): UseAudioRecorderResult => {
     const [error, setError] = useState<string | null>(null);
     const recordingRef = useRef<Audio.Recording | null>(null);
     const startTimeRef = useRef<number>(0);
+    const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     const startRecording = useCallback(async (): Promise<void> => {
+        if (recordingRef.current) {
+            return;
+        }
+
         setError(null);
 
         try {
@@ -85,7 +90,7 @@ export const useAudioRecorder = (): UseAudioRecorderResult => {
             setState({ isRecording: true, durationMs: 0 });
 
             // Update duration periodically
-            const interval = setInterval(async () => {
+            durationIntervalRef.current = setInterval(async () => {
                 if (recordingRef.current) {
                     const status = await recordingRef.current.getStatusAsync();
                     if (status.isRecording) {
@@ -93,10 +98,13 @@ export const useAudioRecorder = (): UseAudioRecorderResult => {
                     }
                 }
             }, 100);
-
-            // Store interval for cleanup
-            (recording as any)._durationInterval = interval;
         } catch (e) {
+            if (durationIntervalRef.current) {
+                clearInterval(durationIntervalRef.current);
+                durationIntervalRef.current = null;
+            }
+            recordingRef.current = null;
+            setState({ isRecording: false, durationMs: 0 });
             setError(e instanceof Error ? e.message : 'Failed to start recording');
         }
     }, []);
@@ -106,7 +114,10 @@ export const useAudioRecorder = (): UseAudioRecorderResult => {
 
         try {
             const recording = recordingRef.current;
-            clearInterval((recording as any)._durationInterval);
+            if (durationIntervalRef.current) {
+                clearInterval(durationIntervalRef.current);
+                durationIntervalRef.current = null;
+            }
 
             await recording.stopAndUnloadAsync();
             const uri = recording.getURI();
@@ -136,18 +147,24 @@ export const useAudioRecorder = (): UseAudioRecorderResult => {
                 type: 'audio',
                 mime,
                 localPath,
-                durationMs: status.durationMillis,
+                durationMs: status.durationMillis ?? Math.max(nowMs() - startTimeRef.current, 0),
                 sizeBytes,
             };
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Failed to stop recording');
             return null;
+        } finally {
+            recordingRef.current = null;
+            setState({ isRecording: false, durationMs: 0 });
         }
     }, []);
 
     const cancelRecording = useCallback(async (): Promise<void> => {
         if (recordingRef.current) {
-            clearInterval((recordingRef.current as any)._durationInterval);
+            if (durationIntervalRef.current) {
+                clearInterval(durationIntervalRef.current);
+                durationIntervalRef.current = null;
+            }
             await recordingRef.current.stopAndUnloadAsync();
             recordingRef.current = null;
         }

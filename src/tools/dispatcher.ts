@@ -1,8 +1,8 @@
 import {
+    attachmentExists,
     getAttachmentBundle,
     getMessageWithAttachments,
     getRecentMessages,
-    searchAttachments,
     searchMemory,
 } from '../api/deviceReadApi';
 import {
@@ -10,7 +10,8 @@ import {
     insertEntityIndex,
     insertMemoryItem,
 } from '../api/deviceWriteApi';
-import { AttachmentType, EntityIndexRow, MemoryItemRow, MemoryType, MetadataKind } from '../types/domain';
+import { EntityIndexRow, MemoryItemRow, MemoryType, MetadataKind } from '../types/domain';
+import { generateUUID } from '../utils/uuid';
 
 // Error codes for tool execution
 export const TOOL_ERROR_CODES = {
@@ -52,8 +53,6 @@ export const executeToolCall = async (
             return handleIndexEntity(args);
         case 'search_memory':
             return handleSearchMemory(args);
-        case 'search_attachments':
-            return handleSearchAttachments(args);
         case 'get_attachment_bundle':
             return handleGetAttachmentBundle(args);
         case 'recent_messages':
@@ -67,24 +66,42 @@ export const executeToolCall = async (
 
 // Tool handlers
 async function handleStoreAttachmentMetadata(args: Record<string, unknown>) {
+    const attachmentId = args.attachment_id as string;
+    const metadataId = (args.metadata_id as string) || generateUUID();
+    const exists = await attachmentExists({ attachment_id: attachmentId });
+    if (!exists) {
+        throw new ToolError(
+            TOOL_ERROR_CODES.INVALID_ARGS,
+            `attachment_id not found: ${attachmentId}. Use an existing attachment_id from this run context.`,
+            false
+        );
+    }
+
     await insertAttachmentMetadata({
-        id: args.metadata_id as string,
-        attachment_id: args.attachment_id as string,
+        id: metadataId,
+        attachment_id: attachmentId,
         model: args.model as string,
         kind: args.kind as MetadataKind,
+        text: (args.text as string) ?? null,
+        tags: (args.tags as string[]) ?? null,
+        event_at: (args.event_at as number) ?? null,
         payload: args.payload,
         created_at: args.created_at as number,
     });
-    return { metadata_id: args.metadata_id };
+    return { metadata_id: metadataId };
 }
 
 async function handleStoreMemoryItem(args: Record<string, unknown>) {
+    const memoryItemId = (args.memory_item_id as string) || generateUUID();
     const row: MemoryItemRow = {
-        id: args.memory_item_id as string,
+        id: memoryItemId,
         type: args.type as MemoryType,
         subject: args.subject as string,
         predicate: args.predicate as string,
         object: args.object as string,
+        text: (args.text as string) ?? null,
+        tags_json: Array.isArray(args.tags) ? JSON.stringify(args.tags) : null,
+        event_at: (args.event_at as number) ?? null,
         time_anchor: (args.time_anchor as number) ?? null,
         confidence: args.confidence as number,
         source_attachment_id: (args.source_attachment_id as string) ?? null,
@@ -92,12 +109,13 @@ async function handleStoreMemoryItem(args: Record<string, unknown>) {
         created_at: args.created_at as number,
     };
     await insertMemoryItem(row);
-    return { memory_item_id: args.memory_item_id };
+    return { memory_item_id: memoryItemId };
 }
 
 async function handleIndexEntity(args: Record<string, unknown>) {
+    const entityIndexId = (args.entity_index_id as string) || generateUUID();
     const row: EntityIndexRow = {
-        id: args.entity_index_id as string,
+        id: entityIndexId,
         entity: args.entity as string,
         source_type: args.source_type as 'attachment' | 'memory' | 'message',
         source_id: args.source_id as string,
@@ -105,27 +123,43 @@ async function handleIndexEntity(args: Record<string, unknown>) {
         created_at: args.created_at as number,
     };
     await insertEntityIndex(row);
-    return { entity_index_id: args.entity_index_id };
+    return { entity_index_id: entityIndexId };
 }
 
 async function handleSearchMemory(args: Record<string, unknown>) {
     const items = await searchMemory({
-        subject: (args.subject as string) ?? null,
-        type: (args.type as MemoryType) ?? null,
-        recent_days: (args.recent_days as number) ?? null,
+        text: (args.text as string) ?? null,
+        tags: (args.tags as string[]) ?? null,
+        tag_mode: (args.tag_mode as 'and' | 'or') ?? null,
+        date_from: (args.date_from as number) ?? null,
+        date_to: (args.date_to as number) ?? null,
         limit: args.limit as number,
     });
-    return { items };
-}
 
-async function handleSearchAttachments(args: Record<string, unknown>) {
-    const attachments = await searchAttachments({
-        entities: args.entities as string[],
-        types: (args.types as AttachmentType[]) ?? null,
-        recent_days: (args.recent_days as number) ?? null,
-        limit: args.limit as number,
-    });
-    return { attachments };
+    const attachmentIds = Array.from(
+        new Set(
+            items
+                .map((item) => item.attachment_id)
+                .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        )
+    );
+
+    const bundleEntries = await Promise.all(
+        attachmentIds.map(async (attachmentId) => [
+            attachmentId,
+            await getAttachmentBundle({ attachment_id: attachmentId }),
+        ] as const)
+    );
+    const bundleByAttachmentId = new Map(bundleEntries);
+
+    return {
+        items: items.map((item) => ({
+            ...item,
+            attachment_bundle: item.attachment_id
+                ? (bundleByAttachmentId.get(item.attachment_id) ?? null)
+                : null,
+        })),
+    };
 }
 
 async function handleGetAttachmentBundle(args: Record<string, unknown>) {

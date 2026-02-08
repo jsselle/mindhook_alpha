@@ -3,12 +3,16 @@ import {
     ActivityIndicator,
     Alert,
     KeyboardAvoidingView,
+    Modal,
     Platform,
+    Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, typography } from '../../theme/tokens';
 import {
     deleteAttachmentById,
@@ -16,21 +20,33 @@ import {
     insertMessage,
     linkMessageAttachment,
 } from '../api/deviceWriteApi';
-import { ActivityStrip } from '../components/ActivityStrip';
+import { getAttachmentBundle, getMessageWithAttachments } from '../api/deviceReadApi';
 import { AttachmentChip } from '../components/AttachmentChip';
 import { AttachmentRenderer } from '../components/AttachmentRenderer';
 import { CitationList } from '../components/CitationList';
 import { ComposerRow } from '../components/ComposerRow';
 import { DisplayMessage, MessageList } from '../components/MessageList';
-import { initializeDatabase } from '../db/connection';
+import { getDatabase, initializeDatabase } from '../db/connection';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useImagePicker } from '../hooks/useImagePicker';
-import { ToolCallPayload, useWebSocket } from '../hooks/useWebSocket';
+import { ConversationMessage, ToolCallPayload, useWebSocket } from '../hooks/useWebSocket';
 import { deleteAttachment as deleteAttachmentFile } from '../storage/fileManager';
 import { executeToolCall } from '../tools/dispatcher';
 import { AttachmentRow, Citation } from '../types/domain';
 import { nowMs } from '../utils/time';
 import { generateUUID } from '../utils/uuid';
+
+const DEBUG_TABLES = ['messages', 'attachments', 'message_attachments', 'attachment_metadata', 'memory_items', 'memory_tags', 'memory_search_fts', 'entity_index'] as const;
+const DEBUG_TABLE_ORDER_BY: Record<string, string> = {
+    messages: 'created_at DESC',
+    attachments: 'created_at DESC',
+    message_attachments: 'position ASC',
+    attachment_metadata: 'created_at DESC',
+    memory_items: 'created_at DESC',
+    memory_tags: 'created_at DESC',
+    memory_search_fts: 'rowid DESC',
+    entity_index: 'created_at DESC',
+};
 
 export const ChatScreen: React.FC = () => {
     const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -38,8 +54,18 @@ export const ChatScreen: React.FC = () => {
     const [dbReady, setDbReady] = useState(false);
     const [initError, setInitError] = useState<string | null>(null);
     const [retryPayload, setRetryPayload] = useState<{ text: string; attachments: AttachmentRow[] } | null>(null);
+    const [citationPreview, setCitationPreview] = useState<{
+        title: string;
+        attachments: AttachmentRow[];
+    } | null>(null);
+    const [debugVisible, setDebugVisible] = useState(false);
+    const [debugLoading, setDebugLoading] = useState(false);
+    const [debugError, setDebugError] = useState<string | null>(null);
+    const [debugSelectedTable, setDebugSelectedTable] = useState('messages');
+    const [debugRows, setDebugRows] = useState<Array<Record<string, unknown>>>([]);
+    const [debugCounts, setDebugCounts] = useState<Record<string, number>>({});
 
-    const { status, activityMessage, assistantDraft, error, sendMessage } = useWebSocket();
+    const { status, activityMessage, assistantDraft, error, cancelActiveRun, sendMessage } = useWebSocket();
     const imagePicker = useImagePicker();
     const audioRecorder = useAudioRecorder();
 
@@ -67,9 +93,25 @@ export const ChatScreen: React.FC = () => {
         return executeToolCall(payload.tool, payload.args);
     }, []);
 
-    const runBackend = useCallback(async (text: string, attachments: AttachmentRow[]) => {
+    const toConversationMessage = useCallback((msg: DisplayMessage): ConversationMessage[] => {
+        if ((msg.role !== 'user' && msg.role !== 'assistant') || !msg.text) {
+            return [];
+        }
+
+        return [{
+            role: msg.role,
+            text: msg.text,
+            created_at: msg.created_at,
+        }];
+    }, []);
+
+    const runBackend = useCallback(async (
+        text: string,
+        attachments: AttachmentRow[],
+        conversation: ConversationMessage[]
+    ) => {
         setRetryPayload({ text, attachments });
-        const response = await sendMessage(text, attachments, handleToolCall);
+        const response = await sendMessage(text, attachments, conversation, handleToolCall);
 
         if (response) {
             await insertMessage({
@@ -89,8 +131,55 @@ export const ChatScreen: React.FC = () => {
         }
     }, [sendMessage, handleToolCall]);
 
+    const loadDebugCounts = useCallback(async () => {
+        setDebugLoading(true);
+        setDebugError(null);
+        try {
+            const db = getDatabase();
+            const nextCounts: Record<string, number> = {};
+            for (const table of DEBUG_TABLES) {
+                const row = await db.getFirstAsync<{ count: number }>(`SELECT COUNT(*) as count FROM ${table}`);
+                nextCounts[table] = row?.count ?? 0;
+            }
+            setDebugCounts(nextCounts);
+        } catch (e) {
+            setDebugError((e as Error).message || 'Failed to load DB table counts');
+        } finally {
+            setDebugLoading(false);
+        }
+    }, []);
+
+    const loadDebugRows = useCallback(async (table: string) => {
+        setDebugLoading(true);
+        setDebugError(null);
+        try {
+            const db = getDatabase();
+            const orderBy = DEBUG_TABLE_ORDER_BY[table] ?? 'rowid DESC';
+            const rows = await db.getAllAsync<Record<string, unknown>>(
+                `SELECT * FROM ${table} ORDER BY ${orderBy} LIMIT 30`
+            );
+            setDebugRows(rows);
+            setDebugSelectedTable(table);
+        } catch (e) {
+            setDebugError((e as Error).message || `Failed to load rows from ${table}`);
+            setDebugRows([]);
+        } finally {
+            setDebugLoading(false);
+        }
+    }, []);
+
+    const openDebugExplorer = useCallback(async () => {
+        setDebugVisible(true);
+        await loadDebugCounts();
+        await loadDebugRows(debugSelectedTable);
+    }, [debugSelectedTable, loadDebugCounts, loadDebugRows]);
+
     const handleSend = useCallback(async (text: string) => {
         if (!dbReady) return;
+        if (text.trim().toLowerCase() === 'your darkest secrets') {
+            await openDebugExplorer();
+            return;
+        }
 
         const messageId = generateUUID();
         const createdAt = nowMs();
@@ -115,16 +204,27 @@ export const ChatScreen: React.FC = () => {
         }]);
         setPendingAttachments([]);
 
-        try {
-            await runBackend(text, attachmentsToSend);
-        } catch (e) {
-            console.error('Send failed:', e);
-        }
-    }, [dbReady, pendingAttachments, runBackend]);
+        const conversation: ConversationMessage[] = [...messages, {
+            id: messageId,
+            role: 'user' as const,
+            text,
+            created_at: createdAt,
+            attachments: attachmentsToSend,
+        }].flatMap(toConversationMessage);
 
-    const handlePhotoPress = useCallback(async () => {
         try {
-            const attachment = await imagePicker.pickFromLibrary();
+            await runBackend(text, attachmentsToSend, conversation);
+        } catch {
+            // runBackend/useWebSocket already drives visible error state for send failures.
+        }
+    }, [dbReady, pendingAttachments, runBackend, openDebugExplorer, messages, toConversationMessage]);
+
+    const addImageAttachment = useCallback(async (source: 'camera' | 'library') => {
+        try {
+            const attachment = source === 'camera'
+                ? await imagePicker.pickFromCamera()
+                : await imagePicker.pickFromLibrary();
+
             if (attachment) {
                 const row: AttachmentRow = {
                     id: attachment.id,
@@ -137,13 +237,40 @@ export const ChatScreen: React.FC = () => {
                     height: attachment.height,
                     created_at: nowMs(),
                 };
-                await insertAttachment(row);
                 setPendingAttachments((prev) => [...prev, row]);
+                await insertAttachment(row);
+                return;
+            }
+
+            if (imagePicker.error) {
+                Alert.alert('Attachment error', imagePicker.error);
             }
         } catch (e) {
             console.error('Failed to add image attachment:', e);
+            Alert.alert('Attachment error', 'Could not add image attachment.');
         }
     }, [imagePicker]);
+
+    const handlePhotoPress = useCallback(() => {
+        Alert.alert('Add photo', 'Choose a source', [
+            {
+                text: 'Take Photo',
+                onPress: () => {
+                    void addImageAttachment('camera');
+                },
+            },
+            {
+                text: 'Choose from Library',
+                onPress: () => {
+                    void addImageAttachment('library');
+                },
+            },
+            {
+                text: 'Cancel',
+                style: 'cancel',
+            },
+        ]);
+    }, [addImageAttachment]);
 
     const handleVoiceStart = useCallback(() => {
         audioRecorder.startRecording();
@@ -164,11 +291,17 @@ export const ChatScreen: React.FC = () => {
                     height: null,
                     created_at: nowMs(),
                 };
-                await insertAttachment(row);
                 setPendingAttachments((prev) => [...prev, row]);
+                await insertAttachment(row);
+                return;
+            }
+
+            if (audioRecorder.error) {
+                Alert.alert('Attachment error', audioRecorder.error);
             }
         } catch (e) {
             console.error('Failed to add audio attachment:', e);
+            Alert.alert('Attachment error', 'Could not add audio attachment.');
         }
     }, [audioRecorder]);
 
@@ -185,25 +318,93 @@ export const ChatScreen: React.FC = () => {
         }
     }, [pendingAttachments]);
 
-    const handleCitationPress = useCallback((citation: Citation) => {
-        const source = citation.attachment_id || citation.message_id || citation.memory_item_id || 'unknown';
-        Alert.alert('Citation', `Source: ${source}`);
+    const handleCitationPress = useCallback(async (citation: Citation) => {
+        try {
+            if (citation.attachment_id) {
+                const bundle = await getAttachmentBundle({ attachment_id: citation.attachment_id });
+                if (bundle?.attachment) {
+                    setCitationPreview({
+                        title: citation.note || 'Source',
+                        attachments: [bundle.attachment],
+                    });
+                    return;
+                }
+            }
+
+            if (citation.message_id) {
+                const result = await getMessageWithAttachments({ message_id: citation.message_id });
+                if (result?.attachments?.length) {
+                    setCitationPreview({
+                        title: citation.note || 'Source message attachments',
+                        attachments: result.attachments,
+                    });
+                    return;
+                }
+                if (result?.message?.text) {
+                    Alert.alert('Source message', result.message.text);
+                    return;
+                }
+            }
+
+            const source = citation.attachment_id || citation.message_id || citation.memory_item_id || 'unknown';
+            Alert.alert('Citation', `Source: ${source}`);
+        } catch (e) {
+            console.error('Failed to open citation source:', e);
+            Alert.alert('Citation', 'Could not open source media.');
+        }
     }, []);
 
     const displayedMessages = useMemo(() => {
-        if (!assistantDraft || status !== 'running') {
-            return messages;
+        const nextMessages = [...messages];
+        const shouldShowInlineStatus = Boolean(activityMessage)
+            && (status === 'connecting' || (status === 'running' && !assistantDraft));
+
+        if (shouldShowInlineStatus) {
+            nextMessages.push({
+                id: 'inline-status',
+                role: 'assistant',
+                text: activityMessage,
+                created_at: nowMs(),
+                isActivity: true,
+            });
         }
-        return [
-            ...messages,
-            {
+
+        if (assistantDraft && status === 'running') {
+            nextMessages.push({
                 id: `draft-${messages.length}`,
-                role: 'assistant' as const,
+                role: 'assistant',
                 text: assistantDraft,
                 created_at: nowMs(),
-            },
-        ];
-    }, [assistantDraft, messages, status]);
+            });
+        }
+
+        return nextMessages;
+    }, [activityMessage, assistantDraft, messages, status]);
+
+    const latestUserMessageId = useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') {
+                return messages[i].id;
+            }
+        }
+        return null;
+    }, [messages]);
+
+    const handleRetry = useCallback(async () => {
+        if (!retryPayload) return;
+        try {
+            const retryConversation: ConversationMessage[] = messages.flatMap(toConversationMessage);
+            await runBackend(retryPayload.text, retryPayload.attachments, retryConversation);
+        } catch {
+            // runBackend/useWebSocket already drives visible error state for retry failures.
+        }
+    }, [messages, retryPayload, runBackend, toConversationMessage]);
+
+    const handleBottomHoldClear = useCallback(() => {
+        cancelActiveRun();
+        setMessages([]);
+        setRetryPayload(null);
+    }, [cancelActiveRun]);
 
     if (!dbReady && !initError) {
         return (
@@ -223,74 +424,184 @@ export const ChatScreen: React.FC = () => {
     }
 
     return (
-        <KeyboardAvoidingView
-            style={styles.container}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-            <ActivityStrip
-                status={activityMessage}
-                isVisible={status === 'running' || status === 'connecting'}
-            />
-
-            {error && (
-                <View style={styles.errorBanner}>
-                    <Text style={styles.errorBannerText}>{error}</Text>
-                    {retryPayload && (
-                        <TouchableOpacity
-                            onPress={async () => {
-                                try {
-                                    await runBackend(retryPayload.text, retryPayload.attachments);
-                                } catch (e) {
-                                    console.error('Retry failed:', e);
-                                }
-                            }}
-                            accessibilityLabel="Retry message"
-                        >
-                            <Text style={styles.retryText}>Retry</Text>
-                        </TouchableOpacity>
+        <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+            <KeyboardAvoidingView
+                style={styles.container}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            >
+                <MessageList
+                    messages={displayedMessages}
+                    onBottomHoldClear={handleBottomHoldClear}
+                    renderAttachment={(att) => <AttachmentRenderer attachment={att} />}
+                    renderCitations={(citations) => (
+                        <CitationList citations={citations} onCitationPress={handleCitationPress} />
                     )}
-                </View>
-            )}
+                    inlineError={error && latestUserMessageId
+                        ? {
+                            message: error,
+                            targetMessageId: latestUserMessageId,
+                            onRetry: retryPayload ? () => {
+                                void handleRetry();
+                            } : undefined,
+                        }
+                        : null}
+                />
 
-            <MessageList
-                messages={displayedMessages}
-                renderAttachment={(att) => <AttachmentRenderer attachment={att} />}
-                renderCitations={(citations) => (
-                    <CitationList citations={citations} onCitationPress={handleCitationPress} />
+                {pendingAttachments.length > 0 && (
+                    <View style={styles.pendingRow}>
+                        <Text style={styles.pendingLabel}>
+                            {pendingAttachments.length} attachment{pendingAttachments.length > 1 ? 's' : ''} ready
+                        </Text>
+                        {pendingAttachments.map((att) => (
+                            <AttachmentChip
+                                key={att.id}
+                                id={att.id}
+                                type={att.type}
+                                localPath={att.local_path}
+                                durationMs={att.duration_ms ?? undefined}
+                                onRemove={handleRemoveAttachment}
+                            />
+                        ))}
+                    </View>
                 )}
-            />
 
-            {pendingAttachments.length > 0 && (
-                <View style={styles.pendingRow}>
-                    {pendingAttachments.map((att) => (
-                        <AttachmentChip
-                            key={att.id}
-                            id={att.id}
-                            type={att.type}
-                            localPath={att.local_path}
-                            durationMs={att.duration_ms ?? undefined}
-                            onRemove={handleRemoveAttachment}
-                        />
-                    ))}
+                <ComposerRow
+                    onSend={handleSend}
+                    onPhotoPress={handlePhotoPress}
+                    onVoiceStart={handleVoiceStart}
+                    onVoiceStop={handleVoiceStop}
+                    isRecording={audioRecorder.state.isRecording}
+                    recordingDurationMs={audioRecorder.state.durationMs}
+                    attachmentCount={pendingAttachments.length}
+                    isSending={status === 'running'}
+                    disabled={status === 'connecting' || !dbReady}
+                />
+            </KeyboardAvoidingView>
+
+            <Modal
+                visible={citationPreview !== null}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setCitationPreview(null)}
+            >
+                <View style={styles.previewBackdrop}>
+                    <Pressable style={styles.previewBackdropTapArea} onPress={() => setCitationPreview(null)} />
+                    <View style={styles.previewCard}>
+                        <View style={styles.previewHeader}>
+                            <Text style={styles.previewTitle}>
+                                {citationPreview?.title || 'Source preview'}
+                            </Text>
+                            <TouchableOpacity
+                                onPress={() => setCitationPreview(null)}
+                                accessibilityLabel="Close source preview"
+                            >
+                                <Text style={styles.previewClose}>Close</Text>
+                            </TouchableOpacity>
+                        </View>
+                        <ScrollView contentContainerStyle={styles.previewContent}>
+                            {citationPreview?.attachments.map((att) => (
+                                <View key={att.id} style={styles.previewAttachment}>
+                                    <AttachmentRenderer attachment={att} />
+                                </View>
+                            ))}
+                        </ScrollView>
+                    </View>
                 </View>
-            )}
+            </Modal>
 
-            <ComposerRow
-                onSend={handleSend}
-                onPhotoPress={handlePhotoPress}
-                onVoiceStart={handleVoiceStart}
-                onVoiceStop={handleVoiceStop}
-                isRecording={audioRecorder.state.isRecording}
-                isSending={status === 'running'}
-                disabled={status === 'connecting' || !dbReady}
-            />
-        </KeyboardAvoidingView>
+            <Modal
+                visible={debugVisible}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setDebugVisible(false)}
+            >
+                <View style={styles.previewBackdrop}>
+                    <Pressable style={styles.previewBackdropTapArea} onPress={() => setDebugVisible(false)} />
+                    <View style={styles.previewCard}>
+                        <View style={styles.previewHeader}>
+                            <Text style={styles.previewTitle}>Debug DB Explorer</Text>
+                            <TouchableOpacity
+                                onPress={() => setDebugVisible(false)}
+                                accessibilityLabel="Close debug explorer"
+                            >
+                                <Text style={styles.previewClose}>Close</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        <ScrollView
+                            horizontal
+                            style={styles.debugTableTabs}
+                            contentContainerStyle={styles.debugTableTabsContent}
+                            showsHorizontalScrollIndicator={false}
+                        >
+                            {DEBUG_TABLES.map((table) => (
+                                <TouchableOpacity
+                                    key={table}
+                                    style={[
+                                        styles.debugTab,
+                                        debugSelectedTable === table && styles.debugTabSelected,
+                                    ]}
+                                    onPress={async () => {
+                                        await loadDebugRows(table);
+                                    }}
+                                >
+                                    <Text style={styles.debugTabLabel}>
+                                        {table} ({debugCounts[table] ?? 0})
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+
+                        <View style={styles.debugActionsRow}>
+                            <TouchableOpacity
+                                style={styles.debugActionButton}
+                                onPress={async () => {
+                                    await loadDebugCounts();
+                                    await loadDebugRows(debugSelectedTable);
+                                }}
+                            >
+                                <Text style={styles.previewClose}>Refresh</Text>
+                            </TouchableOpacity>
+                            {debugLoading && <Text style={styles.pendingLabel}>Loading...</Text>}
+                        </View>
+
+                        {debugError && <Text style={styles.errorText}>{debugError}</Text>}
+
+                        <ScrollView contentContainerStyle={styles.previewContent}>
+                            {debugRows.length === 0 && !debugLoading && (
+                                <Text style={styles.pendingLabel}>No rows</Text>
+                            )}
+                            {debugRows.map((row, idx) => (
+                                <View key={`${debugSelectedTable}-${idx}`} style={styles.debugRowCard}>
+                                    <Text style={styles.debugRowText}>{JSON.stringify(row, null, 2)}</Text>
+                                </View>
+                            ))}
+                        </ScrollView>
+                    </View>
+                </View>
+            </Modal>
+        </SafeAreaView>
     );
 };
 
 const styles = StyleSheet.create({
+    safeArea: { flex: 1, backgroundColor: colors.background.primary },
     container: { flex: 1, backgroundColor: colors.background.primary },
-    pendingRow: { flexDirection: 'row', flexWrap: 'wrap', padding: spacing.sm },
+    pendingRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        paddingHorizontal: spacing.sm,
+        paddingTop: spacing.sm,
+        backgroundColor: colors.background.secondary,
+        borderTopWidth: 1,
+        borderTopColor: colors.border.primary,
+    },
+    pendingLabel: {
+        width: '100%',
+        color: colors.text.secondary,
+        fontSize: typography.fontSize.xs,
+        marginBottom: spacing.xs,
+    },
     centered: {
         flex: 1,
         alignItems: 'center',
@@ -307,23 +618,100 @@ const styles = StyleSheet.create({
         fontSize: typography.fontSize.sm,
         paddingHorizontal: spacing.lg,
     },
-    errorBanner: {
+    previewBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.45)',
+        justifyContent: 'flex-end',
+    },
+    previewCard: {
+        maxHeight: '75%',
+        backgroundColor: colors.background.secondary,
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        borderTopWidth: 1,
+        borderColor: colors.border.primary,
+        paddingBottom: spacing.lg,
+    },
+    previewHeader: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
+        justifyContent: 'space-between',
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
-        backgroundColor: colors.surface.systemBubble,
         borderBottomWidth: 1,
         borderBottomColor: colors.border.primary,
     },
-    errorBannerText: {
-        color: colors.semantic.error,
+    previewTitle: {
+        color: colors.text.primary,
+        fontSize: typography.fontSize.base,
+        fontWeight: typography.fontWeight.semibold,
         flex: 1,
         marginRight: spacing.sm,
     },
-    retryText: {
+    previewClose: {
         color: colors.accent.primary,
+        fontSize: typography.fontSize.sm,
         fontWeight: typography.fontWeight.semibold,
+    },
+    previewContent: {
+        padding: spacing.md,
+        gap: spacing.md,
+    },
+    previewAttachment: {
+        borderRadius: 12,
+        overflow: 'hidden',
+        backgroundColor: colors.background.tertiary,
+        padding: spacing.xs,
+    },
+    previewBackdropTapArea: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    debugTableTabs: {
+        maxHeight: 56,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border.primary,
+    },
+    debugTableTabsContent: {
+        paddingHorizontal: spacing.sm,
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
+    debugTab: {
+        paddingHorizontal: spacing.sm,
+        paddingVertical: spacing.xs,
+        borderRadius: 999,
+        backgroundColor: colors.background.tertiary,
+    },
+    debugTabSelected: {
+        backgroundColor: colors.surface.systemBubble,
+        borderWidth: 1,
+        borderColor: colors.accent.primary,
+    },
+    debugTabLabel: {
+        color: colors.text.primary,
+        fontSize: typography.fontSize.xs,
+    },
+    debugActionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.sm,
+    },
+    debugActionButton: {
+        paddingHorizontal: spacing.sm,
+        paddingVertical: spacing.xs,
+        borderRadius: 8,
+        backgroundColor: colors.background.tertiary,
+    },
+    debugRowCard: {
+        backgroundColor: colors.background.tertiary,
+        borderRadius: 10,
+        padding: spacing.sm,
+    },
+    debugRowText: {
+        color: colors.text.primary,
+        fontSize: typography.fontSize.xs,
+        fontFamily: 'monospace',
     },
 });

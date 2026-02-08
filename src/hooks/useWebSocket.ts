@@ -5,10 +5,12 @@ import { AttachmentRow, Citation } from '../types/domain';
 import { getActivityLabel, getToolLabel } from '../utils/activityMapping';
 import { nowMs } from '../utils/time';
 import { generateUUID } from '../utils/uuid';
+import { classifySocketClose, TerminalOutcome } from './websocketTermination';
 
 const PROTOCOL_VERSION = '1.0';
 const APP_VERSION = '1.0.0';
 const WS_URL = CONFIG.WS_URL;
+const FRIENDLY_SEND_ERROR = 'Message not sent. Please send it again.';
 
 // Message types from backend
 export interface ToolCallPayload {
@@ -36,11 +38,62 @@ interface UseWebSocketResult {
     activityMessage: string | null;
     assistantDraft: string;
     error: string | null;
+    cancelActiveRun: () => void;
     sendMessage: (
         text: string,
         attachments: AttachmentRow[],
+        conversation: ConversationMessage[],
         onToolCall: (payload: ToolCallPayload) => Promise<unknown>
     ) => Promise<FinalResponsePayload | null>;
+}
+
+export interface ConversationMessage {
+    role: 'user' | 'assistant';
+    text: string;
+    created_at: number;
+}
+
+interface UserTimeContext {
+    epoch_ms: number;
+    timezone: string;
+    utc_offset_minutes: number;
+    local_iso: string;
+}
+
+const toLocalIsoWithOffset = (date: Date): string => {
+    const pad = (n: number): string => String(Math.trunc(Math.abs(n))).padStart(2, '0');
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+    const millis = String(date.getMilliseconds()).padStart(3, '0');
+    const offsetMinutes = -date.getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? '+' : '-';
+    const offsetHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
+    const offsetRemainderMinutes = pad(Math.abs(offsetMinutes) % 60);
+
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}${sign}${offsetHours}:${offsetRemainderMinutes}`;
+};
+
+const getUserTimeContext = (): UserTimeContext => {
+    const now = new Date();
+    return {
+        epoch_ms: now.getTime(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        utc_offset_minutes: -now.getTimezoneOffset(),
+        local_iso: toLocalIsoWithOffset(now),
+    };
+};
+
+interface QueuedMessage {
+    text: string;
+    attachments: AttachmentRow[];
+    conversation: ConversationMessage[];
+    onToolCall: (payload: ToolCallPayload) => Promise<unknown>;
+    resolve: (payload: FinalResponsePayload | null) => void;
+    reject: (error: Error) => void;
 }
 
 export const useWebSocket = (): UseWebSocketResult => {
@@ -49,191 +102,307 @@ export const useWebSocket = (): UseWebSocketResult => {
     const [assistantDraft, setAssistantDraft] = useState('');
     const [error, setError] = useState<string | null>(null);
     const socketRef = useRef<WebSocket | null>(null);
+    const activeRunCancelRef = useRef<(() => void) | null>(null);
     const seqRef = useRef(0);
+    const queueRef = useRef<QueuedMessage[]>([]);
+    const isProcessingRef = useRef(false);
+
+    const cancelActiveRun = useCallback(() => {
+        const activeCancel = activeRunCancelRef.current;
+        if (activeCancel) {
+            activeCancel();
+        }
+
+        for (const queued of queueRef.current) {
+            queued.reject(new Error('Message cancelled by user'));
+        }
+        queueRef.current = [];
+
+        setStatus('idle');
+        setActivityMessage(null);
+        setAssistantDraft('');
+        setError(null);
+    }, []);
 
     useEffect(() => {
         return () => {
-            const socket = socketRef.current;
-            if (socket) {
-                socket.onopen = null;
-                socket.onmessage = null;
-                socket.onerror = null;
-                socket.onclose = null;
-                try {
-                    socket.close();
-                } catch {
-                    // Ignore close errors during teardown
-                }
-                socketRef.current = null;
-            }
+            cancelActiveRun();
         };
+    }, [cancelActiveRun]);
+
+    const processQueue = useCallback(async (): Promise<void> => {
+        if (isProcessingRef.current) return;
+
+        isProcessingRef.current = true;
+        try {
+            while (queueRef.current.length > 0) {
+                const next = queueRef.current.shift();
+                if (!next) break;
+
+                setStatus('connecting');
+                setError(null);
+                setAssistantDraft('');
+                setActivityMessage('Preparing...');
+                seqRef.current = 0;
+
+                const runId = generateUUID();
+                const messageId = generateUUID();
+
+                let attachmentPayloads: Array<Record<string, unknown>> = [];
+                try {
+                    attachmentPayloads = await Promise.all(
+                        next.attachments.map(async (att) => {
+                            const base64 = await readAttachmentAsBase64(att.local_path);
+                            return {
+                                attachment_id: att.id,
+                                type: att.type,
+                                mime: att.mime,
+                                base64,
+                                duration_ms: att.duration_ms,
+                                width: att.width,
+                                height: att.height,
+                                byte_length: att.size_bytes || base64.length * 0.75,
+                            };
+                        })
+                    );
+                } catch (e) {
+                    const message = (e as Error).message || 'Failed to prepare attachments';
+                    setStatus('error');
+                    setError(FRIENDLY_SEND_ERROR);
+                    setActivityMessage(null);
+                    next.reject(new Error(message));
+                    continue;
+                }
+
+                await new Promise<void>((done) => {
+                    let settled = false;
+                    let terminalOutcome: TerminalOutcome = 'none';
+                    let cancelledByUser = false;
+
+                    const settleResolve = (payload: FinalResponsePayload | null) => {
+                        if (settled) return;
+                        settled = true;
+                        activeRunCancelRef.current = null;
+                        next.resolve(payload);
+                        done();
+                    };
+                    const settleReject = (err: Error) => {
+                        if (settled) return;
+                        settled = true;
+                        activeRunCancelRef.current = null;
+                        next.reject(err);
+                        done();
+                    };
+
+                    const socket = new WebSocket(WS_URL);
+                    socketRef.current = socket;
+                    activeRunCancelRef.current = () => {
+                        if (settled) return;
+                        cancelledByUser = true;
+                        settleReject(new Error('Message cancelled by user'));
+                        socket.onopen = null;
+                        socket.onmessage = null;
+                        socket.onerror = null;
+                        socket.onclose = null;
+                        try {
+                            socket.close(1000, 'user_cancelled');
+                        } catch {
+                            // Ignore close errors for user cancellation
+                        }
+                        if (socketRef.current === socket) {
+                            socketRef.current = null;
+                        }
+                    };
+
+                    socket.onopen = () => {
+                        if (cancelledByUser || settled) {
+                            return;
+                        }
+                        setStatus('running');
+                        setActivityMessage('Preparing...');
+                        const userTime = getUserTimeContext();
+
+                        const runStart = {
+                            protocol_version: PROTOCOL_VERSION,
+                            app_version: APP_VERSION,
+                            type: 'run_start',
+                            run_id: runId,
+                            seq: ++seqRef.current,
+                            user: {
+                                message_id: messageId,
+                                text: next.text,
+                                created_at: nowMs(),
+                            },
+                            attachments: attachmentPayloads,
+                            context: {
+                                recent_message_count: 10,
+                                messages: next.conversation,
+                                user_time: userTime,
+                            },
+                        };
+
+                        socket.send(JSON.stringify(runStart));
+                    };
+
+                    socket.onmessage = async (event) => {
+                        if (cancelledByUser || settled) {
+                            return;
+                        }
+                        try {
+                            const msg = JSON.parse(event.data);
+
+                            switch (msg.type) {
+                                case 'status':
+                                    setActivityMessage(getActivityLabel(msg.stage));
+                                    break;
+
+                                case 'assistant_token':
+                                    setAssistantDraft((prev) => prev + msg.text);
+                                    break;
+
+                                case 'tool_call':
+                                    setActivityMessage(getToolLabel(msg.tool));
+                                    try {
+                                        const result = await next.onToolCall(msg);
+                                        if (cancelledByUser || settled || socket.readyState !== WebSocket.OPEN) {
+                                            return;
+                                        }
+                                        const toolResult = {
+                                            protocol_version: PROTOCOL_VERSION,
+                                            app_version: APP_VERSION,
+                                            type: 'tool_result',
+                                            run_id: runId,
+                                            seq: ++seqRef.current,
+                                            call_id: msg.call_id,
+                                            tool: msg.tool,
+                                            result: { ok: true, data: result },
+                                        };
+                                        socket.send(JSON.stringify(toolResult));
+                                    } catch (e) {
+                                        if (cancelledByUser || settled || socket.readyState !== WebSocket.OPEN) {
+                                            return;
+                                        }
+                                        const toolError = {
+                                            protocol_version: PROTOCOL_VERSION,
+                                            app_version: APP_VERSION,
+                                            type: 'tool_error',
+                                            run_id: runId,
+                                            seq: ++seqRef.current,
+                                            call_id: msg.call_id,
+                                            tool: msg.tool,
+                                            error: {
+                                                code: 'TOOL_EXECUTION_FAILED',
+                                                message: (e as Error).message,
+                                                retryable: false,
+                                            },
+                                        };
+                                        socket.send(JSON.stringify(toolError));
+                                    }
+                                    break;
+
+                                case 'final_response':
+                                    terminalOutcome = 'complete';
+                                    setStatus('complete');
+                                    setActivityMessage(null);
+                                    settleResolve(msg as FinalResponsePayload);
+                                    break;
+
+                                case 'run_error':
+                                    terminalOutcome = 'error';
+                                    setStatus('error');
+                                    setError(FRIENDLY_SEND_ERROR);
+                                    setActivityMessage(null);
+                                    settleReject(new Error(msg.error.message));
+                                    break;
+                            }
+                        } catch (e) {
+                            console.error('Failed to parse message:', e);
+                            terminalOutcome = 'error';
+                            setStatus('error');
+                            setError(FRIENDLY_SEND_ERROR);
+                            setActivityMessage(null);
+                            settleReject(new Error('Invalid server message'));
+                        }
+                    };
+
+                    socket.onerror = () => {
+                        if (cancelledByUser) {
+                            return;
+                        }
+                        if (settled || terminalOutcome !== 'none') {
+                            return;
+                        }
+                        terminalOutcome = 'error';
+                        setStatus('error');
+                        setError(FRIENDLY_SEND_ERROR);
+                        setActivityMessage(null);
+                        settleReject(new Error('WebSocket error'));
+                    };
+
+                    socket.onclose = (event) => {
+                        socketRef.current = null;
+                        activeRunCancelRef.current = null;
+                        if (cancelledByUser) {
+                            return;
+                        }
+                        const classification = classifySocketClose({
+                            settled,
+                            terminalOutcome,
+                            closeReason: typeof event?.reason === 'string' ? event.reason : '',
+                        });
+
+                        if (classification === 'ignore') {
+                            return;
+                        }
+
+                        const closeCode = typeof event?.code === 'number' ? event.code : undefined;
+                        if (classification === 'run_error' || classification === 'protocol_error') {
+                            terminalOutcome = 'error';
+                            const message = classification === 'run_error'
+                                ? 'Run failed before response completed'
+                                : 'Run completed without final response';
+                            setStatus('error');
+                            setError(FRIENDLY_SEND_ERROR);
+                            setActivityMessage(null);
+                            settleReject(new Error(message));
+                            return;
+                        }
+
+                        terminalOutcome = 'error';
+                        const closeLabel = closeCode ? ` (code ${closeCode})` : '';
+                        setStatus('error');
+                        setError(FRIENDLY_SEND_ERROR);
+                        setActivityMessage(null);
+                        settleReject(new Error(`Connection closed unexpectedly${closeLabel}`));
+                    };
+                });
+            }
+        } finally {
+            isProcessingRef.current = false;
+            activeRunCancelRef.current = null;
+            if (queueRef.current.length === 0) {
+                setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+                setActivityMessage(null);
+            }
+        }
     }, []);
 
     const sendMessage = useCallback(async (
         text: string,
         attachments: AttachmentRow[],
+        conversation: ConversationMessage[],
         onToolCall: (payload: ToolCallPayload) => Promise<unknown>
     ): Promise<FinalResponsePayload | null> => {
-        setStatus('connecting');
-        setError(null);
-        setAssistantDraft('');
-        setActivityMessage('Connecting...');
-        seqRef.current = 0;
+        return new Promise<FinalResponsePayload | null>((resolve, reject) => {
+            queueRef.current.push({ text, attachments, conversation, onToolCall, resolve, reject });
 
-        const runId = generateUUID();
-        const messageId = generateUUID();
+            if (isProcessingRef.current) {
+                setActivityMessage(`Queued (${queueRef.current.length})`);
+            }
 
-        let attachmentPayloads: Array<Record<string, unknown>> = [];
-        try {
-            attachmentPayloads = await Promise.all(
-                attachments.map(async (att) => {
-                    const base64 = await readAttachmentAsBase64(att.local_path);
-                    return {
-                        attachment_id: att.id,
-                        type: att.type,
-                        mime: att.mime,
-                        base64,
-                        duration_ms: att.duration_ms,
-                        width: att.width,
-                        height: att.height,
-                        byte_length: att.size_bytes || base64.length * 0.75,
-                    };
-                })
-            );
-        } catch (e) {
-            const message = (e as Error).message || 'Failed to prepare attachments';
-            setStatus('error');
-            setError(message);
-            setActivityMessage(null);
-            throw new Error(message);
-        }
-
-        return new Promise((resolve, reject) => {
-            let settled = false;
-
-            const settleResolve = (payload: FinalResponsePayload | null) => {
-                if (settled) return;
-                settled = true;
-                resolve(payload);
-            };
-            const settleReject = (err: Error) => {
-                if (settled) return;
-                settled = true;
-                reject(err);
-            };
-
-            const socket = new WebSocket(WS_URL);
-            socketRef.current = socket;
-
-            socket.onopen = () => {
-                setStatus('running');
-                setActivityMessage('Sending message...');
-
-                const runStart = {
-                    protocol_version: PROTOCOL_VERSION,
-                    app_version: APP_VERSION,
-                    type: 'run_start',
-                    run_id: runId,
-                    seq: ++seqRef.current,
-                    user: {
-                        message_id: messageId,
-                        text,
-                        created_at: nowMs(),
-                    },
-                    attachments: attachmentPayloads,
-                    context: { recent_message_count: 10 },
-                };
-
-                socket.send(JSON.stringify(runStart));
-            };
-
-            socket.onmessage = async (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-
-                    switch (msg.type) {
-                        case 'status':
-                            setActivityMessage(getActivityLabel(msg.stage));
-                            break;
-
-                        case 'assistant_token':
-                            setAssistantDraft((prev) => prev + msg.text);
-                            break;
-
-                        case 'tool_call':
-                            setActivityMessage(getToolLabel(msg.tool));
-                            try {
-                                const result = await onToolCall(msg);
-                                const toolResult = {
-                                    protocol_version: PROTOCOL_VERSION,
-                                    app_version: APP_VERSION,
-                                    type: 'tool_result',
-                                    run_id: runId,
-                                    seq: ++seqRef.current,
-                                    call_id: msg.call_id,
-                                    tool: msg.tool,
-                                    result: { ok: true, data: result },
-                                };
-                                socket.send(JSON.stringify(toolResult));
-                            } catch (e) {
-                                const toolError = {
-                                    protocol_version: PROTOCOL_VERSION,
-                                    app_version: APP_VERSION,
-                                    type: 'tool_error',
-                                    run_id: runId,
-                                    seq: ++seqRef.current,
-                                    call_id: msg.call_id,
-                                    tool: msg.tool,
-                                    error: {
-                                        code: 'TOOL_EXECUTION_FAILED',
-                                        message: (e as Error).message,
-                                        retryable: false,
-                                    },
-                                };
-                                socket.send(JSON.stringify(toolError));
-                            }
-                            break;
-
-                        case 'final_response':
-                            setStatus('complete');
-                            setActivityMessage(null);
-                            settleResolve(msg as FinalResponsePayload);
-                            break;
-
-                        case 'run_error':
-                            setStatus('error');
-                            setError(msg.error.message);
-                            setActivityMessage(null);
-                            settleReject(new Error(msg.error.message));
-                            break;
-                    }
-                } catch (e) {
-                    console.error('Failed to parse message:', e);
-                    setStatus('error');
-                    setError('Invalid server message');
-                    setActivityMessage(null);
-                    settleReject(new Error('Invalid server message'));
-                }
-            };
-
-            socket.onerror = () => {
-                setStatus('error');
-                setError('Connection error');
-                setActivityMessage(null);
-                settleReject(new Error('WebSocket error'));
-            };
-
-            socket.onclose = () => {
-                socketRef.current = null;
-                if (!settled) {
-                    setStatus('error');
-                    setError('Connection closed unexpectedly');
-                    setActivityMessage(null);
-                    settleReject(new Error('Connection closed unexpectedly'));
-                }
-            };
+            void processQueue();
         });
-    }, []);
+    }, [processQueue]);
 
-    return { status, activityMessage, assistantDraft, error, sendMessage };
+    return { status, activityMessage, assistantDraft, error, cancelActiveRun, sendMessage };
 };

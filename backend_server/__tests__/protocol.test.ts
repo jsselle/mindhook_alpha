@@ -73,6 +73,51 @@ describe('Protocol Validation', () => {
             expect(validateRunStart(msg).valid).toBe(true);
         });
 
+        it('accepts run_start with conversation messages', () => {
+            const msg = {
+                ...validMsg,
+                context: {
+                    recent_message_count: 2,
+                    messages: [
+                        { role: 'user' as const, text: 'Hello', created_at: Date.now() - 1000 },
+                        { role: 'assistant' as const, text: 'Hi there', created_at: Date.now() - 500 },
+                    ],
+                },
+            };
+            expect(validateRunStart(msg).valid).toBe(true);
+        });
+
+        it('accepts run_start with user_time context', () => {
+            const msg = {
+                ...validMsg,
+                context: {
+                    recent_message_count: 0,
+                    user_time: {
+                        epoch_ms: Date.now(),
+                        timezone: 'America/Los_Angeles',
+                        utc_offset_minutes: -480,
+                        local_iso: '2026-02-08T09:10:11.123-08:00',
+                    },
+                },
+            };
+            expect(validateRunStart(msg).valid).toBe(true);
+        });
+
+        it('rejects invalid context.messages role', () => {
+            const msg = {
+                ...validMsg,
+                context: {
+                    recent_message_count: 1,
+                    messages: [
+                        { role: 'system', text: 'nope', created_at: Date.now() },
+                    ],
+                },
+            };
+            const result = validateRunStart(msg as unknown as typeof validMsg);
+            expect(result.valid).toBe(false);
+            expect(result.error?.code).toBe('INVALID_MESSAGE');
+        });
+
         it('rejects too many attachments', () => {
             const msg = {
                 ...validMsg,

@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { AttachmentType } from '../types/domain';
 
 const ATTACHMENTS_ROOT = 'attachments';

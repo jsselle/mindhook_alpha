@@ -8,7 +8,7 @@ import {
 describe('activityMapping', () => {
     describe('ACTIVITY_LABELS', () => {
         it('should have all expected stage mappings', () => {
-            expect(ACTIVITY_LABELS.connecting).toBe('Connecting...');
+            expect(ACTIVITY_LABELS.connecting).toBe('Preparing...');
             expect(ACTIVITY_LABELS.preparing_model).toBe('Preparing...');
             expect(ACTIVITY_LABELS.generating).toBe('Thinking...');
             expect(ACTIVITY_LABELS.transcribing_audio).toBe('Transcribing audio...');
@@ -22,7 +22,7 @@ describe('activityMapping', () => {
 
     describe('getActivityLabel', () => {
         it('should return mapped label for known stages', () => {
-            expect(getActivityLabel('connecting')).toBe('Connecting...');
+            expect(getActivityLabel('connecting')).toBe('Preparing...');
             expect(getActivityLabel('generating')).toBe('Thinking...');
             expect(getActivityLabel('searching_memory')).toBe('Searching memory...');
         });

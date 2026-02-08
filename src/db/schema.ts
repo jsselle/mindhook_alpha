@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 
 export const DDL_STATEMENTS = `
 PRAGMA foreign_keys = ON;
@@ -43,12 +43,33 @@ CREATE TABLE IF NOT EXISTS attachment_metadata (
   attachment_id TEXT NOT NULL,
   model TEXT NOT NULL,
   kind TEXT NOT NULL CHECK(kind IN ('transcript', 'scene', 'entities', 'summary', 'claims')),
+  text TEXT,
+  tags_json TEXT,
+  event_at INTEGER,
   payload_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_metadata_attachment ON attachment_metadata(attachment_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_kind ON attachment_metadata(kind);
+
+-- Normalized tags index for metadata + memory search
+CREATE TABLE IF NOT EXISTS memory_tags (
+  source_type TEXT NOT NULL CHECK(source_type IN ('memory', 'attachment_metadata')),
+  source_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (source_type, source_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_memory_tags_source ON memory_tags(source_type, source_id);
+
+-- Full-text search index across normalized memory + metadata text
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts USING fts5(
+  source_type UNINDEXED,
+  source_id UNINDEXED,
+  text
+);
 
 -- Durable memory facts (SPO triples)
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -57,6 +78,9 @@ CREATE TABLE IF NOT EXISTS memory_items (
   subject TEXT NOT NULL,
   predicate TEXT NOT NULL,
   object TEXT NOT NULL,
+  text TEXT,
+  tags_json TEXT,
+  event_at INTEGER,
   time_anchor INTEGER,
   confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
   source_attachment_id TEXT,

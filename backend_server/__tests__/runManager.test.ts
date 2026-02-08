@@ -53,6 +53,7 @@ describe('RunManager', () => {
         const sentMsg = JSON.parse((socket.send as jest.Mock).mock.calls[0][0]);
         expect(sentMsg.type).toBe('run_error');
         expect(sentMsg.error.code).toBe('UNSUPPORTED_PROTOCOL');
+        expect(socket.close).toHaveBeenCalledWith(1011, 'run_error');
     });
 
     it('validates run_start payload - too many attachments', () => {
@@ -214,6 +215,7 @@ describe('RunManager', () => {
         expect(finalMsg.type).toBe('final_response');
         expect(finalMsg.message.text).toBe('Final response text');
         expect(finalMsg.tool_summary).toEqual({ calls: 0, errors: 0 });
+        expect(socket.close).toHaveBeenCalledWith(1000, 'run_complete');
     });
 
     it('cleans up pending tool calls on connection close', () => {

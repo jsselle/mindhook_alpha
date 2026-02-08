@@ -1,18 +1,18 @@
-import websocket from '@fastify/websocket';
-import Fastify from 'fastify';
-import { handleConnection } from './ws/handler';
+import websocket from "@fastify/websocket";
+import Fastify from "fastify";
+import { handleConnection } from "./ws/handler.ts";
 
 export const createServer = async () => {
-    const fastify = Fastify({ logger: true });
+  const fastify = Fastify({ logger: true });
 
-    await fastify.register(websocket);
+  await fastify.register(websocket);
 
-    fastify.get('/ws', { websocket: true }, (socket, req) => {
-        handleConnection(socket, req);
-    });
+  fastify.get("/ws", { websocket: true }, (socket, req) => {
+    handleConnection(socket, req);
+  });
 
-    // Health check
-    fastify.get('/health', async () => ({ status: 'ok' }));
+  // Health check
+  fastify.get("/health", async () => ({ status: "ok" }));
 
-    return fastify;
+  return fastify;
 };

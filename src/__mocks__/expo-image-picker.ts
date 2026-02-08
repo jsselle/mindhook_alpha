@@ -3,6 +3,11 @@ export const MediaTypeOptions = {
     Videos: 'videos',
     All: 'all',
 };
+export const MediaType = {
+    Images: 'images',
+    Videos: 'videos',
+    LivePhotos: 'livePhotos',
+};
 
 export const requestMediaLibraryPermissionsAsync = jest.fn().mockResolvedValue({ granted: true });
 export const requestCameraPermissionsAsync = jest.fn().mockResolvedValue({ granted: true });

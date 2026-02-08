@@ -38,6 +38,9 @@ export interface AttachmentMetadataRow {
     attachment_id: string;
     model: string;
     kind: MetadataKind;
+    text: string | null;
+    tags_json: string | null;
+    event_at: number | null;
     payload_json: string; // JSON.stringify(payload)
     created_at: number;   // Unix epoch ms
 }
@@ -48,6 +51,9 @@ export interface MemoryItemRow {
     subject: string;
     predicate: string;
     object: string;
+    text: string | null;
+    tags_json: string | null;
+    event_at: number | null;
     time_anchor: number | null;
     confidence: number;   // 0..1
     source_attachment_id: string | null;
@@ -62,6 +68,13 @@ export interface EntityIndexRow {
     source_id: string;
     weight: number;       // 0..1 or ranking
     created_at: number;   // Unix epoch ms
+}
+
+export interface MemoryTagRow {
+    source_type: 'memory' | 'attachment_metadata';
+    source_id: string;
+    tag: string;
+    created_at: number;
 }
 
 // ===== CITATION TYPE (for retrieval) =====

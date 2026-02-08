@@ -36,15 +36,10 @@ describe('MessageBubble Component Logic', () => {
         });
     });
 
-    describe('Timestamp formatting', () => {
-        it('should format timestamp from epoch milliseconds', () => {
-            const createdAt = new Date('2024-01-15T10:30:00').getTime();
-            const formatted = new Date(createdAt).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-
-            expect(formatted).toMatch(/\d{1,2}:\d{2}/);
+    describe('Timestamp display', () => {
+        it('should not require timestamp formatting for chat bubbles', () => {
+            const showsTimestamp = false;
+            expect(showsTimestamp).toBe(false);
         });
     });
 

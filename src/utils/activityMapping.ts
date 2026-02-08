@@ -2,7 +2,7 @@
 // Maps internal identifiers to user-friendly display text
 
 export const ACTIVITY_LABELS: Record<string, string> = {
-    connecting: 'Connecting...',
+    connecting: 'Preparing...',
     preparing_model: 'Preparing...',
     generating: 'Thinking...',
     transcribing_audio: 'Transcribing audio...',

@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Dimensions, Image, Modal, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { colors, radii, spacing } from '../../theme/tokens';
+import { getThumbnailDimensions } from './imageThumbnailSizing';
 
 interface ImageThumbnailProps {
     localPath: string;
@@ -9,21 +10,24 @@ interface ImageThumbnailProps {
     height?: number;
 }
 
+const DEFAULT_THUMBNAIL_WIDTH = 200;
+const DEFAULT_THUMBNAIL_HEIGHT = 150;
+
 export const ImageThumbnail: React.FC<ImageThumbnailProps> = ({
     localPath,
-    width = 200,
-    height = 150,
+    width = DEFAULT_THUMBNAIL_WIDTH,
+    height = DEFAULT_THUMBNAIL_HEIGHT,
 }) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const screenWidth = Dimensions.get('window').width;
-    const screenHeight = Dimensions.get('window').height;
+    const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+    const thumbnail = getThumbnailDimensions(width, height);
 
     return (
         <>
             <TouchableOpacity onPress={() => setIsFullscreen(true)}>
                 <Image
                     source={{ uri: localPath }}
-                    style={[styles.thumbnail, { width, height }]}
+                    style={[styles.thumbnail, { width: thumbnail.width, height: thumbnail.height }]}
                     resizeMode="cover"
                 />
             </TouchableOpacity>
@@ -34,7 +38,7 @@ export const ImageThumbnail: React.FC<ImageThumbnailProps> = ({
                 animationType="fade"
                 onRequestClose={() => setIsFullscreen(false)}
             >
-                <View style={styles.modalContainer}>
+                <Pressable style={styles.modalContainer} onPress={() => setIsFullscreen(false)}>
                     <TouchableOpacity
                         style={styles.closeButton}
                         onPress={() => setIsFullscreen(false)}
@@ -43,10 +47,10 @@ export const ImageThumbnail: React.FC<ImageThumbnailProps> = ({
                     </TouchableOpacity>
                     <Image
                         source={{ uri: localPath }}
-                        style={{ width: screenWidth, height: screenHeight * 0.8 }}
+                        style={{ width: screenWidth, height: screenHeight }}
                         resizeMode="contain"
                     />
-                </View>
+                </Pressable>
             </Modal>
         </>
     );

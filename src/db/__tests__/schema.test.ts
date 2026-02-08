@@ -16,12 +16,14 @@ describe('Database Schema', () => {
             'message_attachments',
             'attachment_metadata',
             'memory_items',
+            'memory_tags',
             'entity_index'
         ];
 
         requiredTables.forEach(table => {
             expect(DDL_STATEMENTS).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
         });
+        expect(DDL_STATEMENTS).toContain('CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts');
     });
 
     it('creates required indexes', () => {
@@ -29,6 +31,8 @@ describe('Database Schema', () => {
             'idx_messages_created_at',
             'idx_metadata_attachment',
             'idx_metadata_kind',
+            'idx_memory_tags_tag',
+            'idx_memory_tags_source',
             'idx_memory_subject',
             'idx_memory_type',
             'idx_entity_term'

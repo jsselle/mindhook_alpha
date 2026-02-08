@@ -1,7 +1,81 @@
+import React from 'react';
+import TestRenderer, { act } from 'react-test-renderer';
+import { useWebSocket } from '../useWebSocket';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+jest.mock('../../config/env', () => ({
+    CONFIG: {
+        WS_URL: 'ws://test.local/ws',
+    },
+}));
+
+jest.mock('../../storage/fileManager', () => ({
+    readAttachmentAsBase64: jest.fn().mockResolvedValue(''),
+}));
+
+class MockWebSocket {
+    static instances: MockWebSocket[] = [];
+
+    readyState = 1;
+    url: string;
+
+    onopen: (() => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onerror: ((event: unknown) => void) | null = null;
+    onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
+
+    send = jest.fn();
+    close = jest.fn();
+
+    constructor(url: string) {
+        this.url = url;
+        MockWebSocket.instances.push(this);
+    }
+
+    triggerOpen(): void {
+        this.onopen?.();
+    }
+
+    triggerMessage(payload: unknown): void {
+        this.onmessage?.({ data: JSON.stringify(payload) });
+    }
+
+    triggerError(): void {
+        this.onerror?.({});
+    }
+
+    triggerClose(code = 1000, reason = ''): void {
+        this.readyState = 3;
+        this.onclose?.({ code, reason });
+    }
+}
+
+const flushPromises = async (): Promise<void> => {
+    await act(async () => {
+        await Promise.resolve();
+    });
+};
+
 // Note: WebSocket testing typically requires mocking the global WebSocket
 // This tests the protocol handling logic
 
 describe('WebSocket Protocol', () => {
+    let originalWebSocket: typeof global.WebSocket | undefined;
+
+    beforeEach(() => {
+        originalWebSocket = global.WebSocket;
+        (global as typeof global & { WebSocket: unknown }).WebSocket =
+            MockWebSocket as unknown as typeof WebSocket;
+        MockWebSocket.instances = [];
+        jest.clearAllMocks();
+    });
+
+    afterEach(() => {
+        (global as typeof global & { WebSocket: unknown }).WebSocket =
+            originalWebSocket as unknown as typeof WebSocket;
+    });
+
     it('builds correct run_start message shape', () => {
         const runStart = {
             protocol_version: '1.0',
@@ -91,6 +165,141 @@ describe('RunStatus types', () => {
         const validStatuses = ['idle', 'connecting', 'running', 'complete', 'error'];
         validStatuses.forEach((status) => {
             expect(['idle', 'connecting', 'running', 'complete', 'error']).toContain(status);
+        });
+    });
+});
+
+describe('useWebSocket termination handling', () => {
+    let originalWebSocket: typeof global.WebSocket | undefined;
+    let consoleErrorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        originalWebSocket = global.WebSocket;
+        (global as typeof global & { WebSocket: unknown }).WebSocket =
+            MockWebSocket as unknown as typeof WebSocket;
+        MockWebSocket.instances = [];
+        jest.clearAllMocks();
+        consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+        (global as typeof global & { WebSocket: unknown }).WebSocket =
+            originalWebSocket as unknown as typeof WebSocket;
+        consoleErrorSpy.mockRestore();
+    });
+
+    it('does not set connection error after successful final_response and socket close', async () => {
+        let hookState: ReturnType<typeof useWebSocket> | null = null;
+
+        const HookHarness: React.FC = () => {
+            hookState = useWebSocket();
+            return null;
+        };
+
+        let renderer: TestRenderer.ReactTestRenderer;
+        await act(async () => {
+            renderer = TestRenderer.create(React.createElement(HookHarness));
+        });
+
+        let resolvedPayload: unknown = null;
+        let runPromise: Promise<unknown>;
+        await act(async () => {
+            runPromise = hookState!.sendMessage('hello', [], [], async () => ({}));
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            const socket = MockWebSocket.instances[0];
+            expect(socket).toBeDefined();
+
+            socket.triggerOpen();
+            expect(socket.send).toHaveBeenCalledTimes(1);
+            const runStart = JSON.parse((socket.send as jest.Mock).mock.calls[0][0]);
+            expect(runStart.type).toBe('run_start');
+            expect(runStart.context.user_time).toBeDefined();
+            expect(typeof runStart.context.user_time.epoch_ms).toBe('number');
+            expect(typeof runStart.context.user_time.timezone).toBe('string');
+            expect(typeof runStart.context.user_time.utc_offset_minutes).toBe('number');
+            expect(typeof runStart.context.user_time.local_iso).toBe('string');
+
+            socket.triggerMessage({
+                type: 'final_response',
+                message: {
+                    message_id: 'assistant-1',
+                    role: 'assistant',
+                    text: 'done',
+                    created_at: 123,
+                },
+                citations: [],
+                tool_summary: { calls: 0, errors: 0 },
+            });
+
+            // Simulate transport noise after terminal success.
+            socket.triggerError();
+            socket.triggerClose(1000, 'run_complete');
+        });
+        resolvedPayload = await runPromise!;
+
+        await flushPromises();
+
+        expect(resolvedPayload).toEqual({
+            type: 'final_response',
+            message: {
+                message_id: 'assistant-1',
+                role: 'assistant',
+                text: 'done',
+                created_at: 123,
+            },
+            citations: [],
+            tool_summary: { calls: 0, errors: 0 },
+        });
+        expect(hookState!.error).toBeNull();
+        expect(hookState!.status).toBe('idle');
+
+        await act(async () => {
+            renderer!.unmount();
+        });
+    });
+
+    it('cancels an active run and clears transient UI state', async () => {
+        let hookState: ReturnType<typeof useWebSocket> | null = null;
+
+        const HookHarness: React.FC = () => {
+            hookState = useWebSocket();
+            return null;
+        };
+
+        let renderer: TestRenderer.ReactTestRenderer;
+        await act(async () => {
+            renderer = TestRenderer.create(React.createElement(HookHarness));
+        });
+
+        let runPromise: Promise<unknown>;
+        await act(async () => {
+            runPromise = hookState!.sendMessage('hello', [], [], async () => ({}));
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            const socket = MockWebSocket.instances[0];
+            expect(socket).toBeDefined();
+            socket.triggerOpen();
+        });
+
+        expect(hookState!.status).toBe('running');
+
+        await act(async () => {
+            hookState!.cancelActiveRun();
+        });
+
+        await expect(runPromise!).rejects.toThrow('Message cancelled by user');
+        expect(hookState!.status).toBe('idle');
+        expect(hookState!.activityMessage).toBeNull();
+        expect(hookState!.assistantDraft).toBe('');
+        expect(hookState!.error).toBeNull();
+
+        await act(async () => {
+            renderer!.unmount();
         });
     });
 });

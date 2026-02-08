@@ -10,24 +10,23 @@ describe('DeviceReadAPI', () => {
     });
 
     describe('searchMemory', () => {
-        it('builds query with subject filter', async () => {
-            await searchMemory({ subject: 'keys', limit: 10 });
+        it('uses FTS query for text filter', async () => {
+            await searchMemory({ text: 'keys', limit: 10 });
 
             const mockDb = getMockDatabase();
-            expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
-                expect.stringContaining('subject = ?'),
-                expect.arrayContaining(['keys', 10])
-            );
+            expect(mockDb?.getAllAsync).toHaveBeenCalled();
+            const firstSql = (mockDb?.getAllAsync as jest.Mock).mock.calls[0][0] as string;
+            expect(firstSql).toContain('FROM memory_search_fts');
+            expect(firstSql).toContain('MATCH');
         });
 
-        it('orders by confidence DESC', async () => {
+        it('queries both memory and attachment_metadata sources', async () => {
             await searchMemory({ limit: 5 });
 
             const mockDb = getMockDatabase();
-            expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
-                expect.stringContaining('ORDER BY confidence DESC'),
-                expect.any(Array)
-            );
+            expect(mockDb?.getAllAsync).toHaveBeenCalledTimes(2);
+            expect((mockDb?.getAllAsync as jest.Mock).mock.calls[0][0]).toContain('FROM memory_items');
+            expect((mockDb?.getAllAsync as jest.Mock).mock.calls[1][0]).toContain('FROM attachment_metadata');
         });
     });
 

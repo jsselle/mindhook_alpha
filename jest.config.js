@@ -14,7 +14,8 @@ module.exports = {
     '^react-native-uuid$': '<rootDir>/node_modules/react-native-uuid',
     '^expo-sqlite$': '<rootDir>/src/__mocks__/expo-sqlite.ts',
     '^expo-crypto$': '<rootDir>/src/__mocks__/expo-crypto.ts',
-    '^expo-file-system$': '<rootDir>/src/__mocks__/expo-file-system.ts'
+    '^expo-file-system$': '<rootDir>/src/__mocks__/expo-file-system.ts',
+    '^expo-file-system/legacy$': '<rootDir>/src/__mocks__/expo-file-system.ts'
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {

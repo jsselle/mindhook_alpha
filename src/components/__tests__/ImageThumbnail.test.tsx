@@ -1,6 +1,7 @@
 /**
  * Tests for ImageThumbnail component logic
  */
+import { getThumbnailDimensions } from '../imageThumbnailSizing';
 
 describe('ImageThumbnail Component Logic', () => {
     describe('Default dimensions', () => {
@@ -18,6 +19,23 @@ describe('ImageThumbnail Component Logic', () => {
 
             expect(providedHeight).toBe(250);
             expect(defaultHeight).toBe(150);
+        });
+
+        it('should scale down very large portrait images', () => {
+            expect(getThumbnailDimensions(1200, 2000)).toEqual({ width: 168, height: 280 });
+        });
+
+        it('should scale down very large landscape images', () => {
+            expect(getThumbnailDimensions(4000, 1000)).toEqual({ width: 220, height: 55 });
+        });
+
+        it('should keep small images unchanged', () => {
+            expect(getThumbnailDimensions(180, 120)).toEqual({ width: 180, height: 120 });
+        });
+
+        it('should fallback for invalid dimensions', () => {
+            expect(getThumbnailDimensions(undefined, undefined)).toEqual({ width: 200, height: 150 });
+            expect(getThumbnailDimensions(0, -5)).toEqual({ width: 200, height: 150 });
         });
     });
 
