@@ -4,7 +4,6 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
     "start": "node src/index.ts",
     "test": "jest",
     "test:watch": "jest --watch"
