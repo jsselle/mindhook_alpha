@@ -34,19 +34,9 @@ export const createServer = async () => {
     wsHandler: (socket, req) => {
       handleConnection(socket, req);
     },
-    handler: async (req, reply) => {
-      console.warn(
-        {
-          connection: req.headers.connection,
-          upgrade: req.headers.upgrade,
-          xForwardedProto: req.headers["x-forwarded-proto"],
-        },
-        "non-websocket request to /ws",
-      );
-      return reply.code(426).send({
-        error: "Upgrade Required",
-        message: "Use a WebSocket client with Upgrade: websocket",
-      });
+    handler: async (socket, req) => {
+      //@ts-ignore
+      handleConnection(socket, req);
     },
   });
 
