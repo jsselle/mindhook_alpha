@@ -146,6 +146,13 @@ const extractTextFromChunk = (chunk: unknown): string => {
   return textParts.join("");
 };
 
+const normalizeFunctionResponse = (result: unknown): Record<string, unknown> => {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return result as Record<string, unknown>;
+  }
+  return { value: result };
+};
+
 export const streamGeneration = async (
   contents: Content[],
   callbacks: StreamCallbacks,
@@ -188,7 +195,7 @@ export const streamGeneration = async (
               functionResponses.push({
                 functionResponse: {
                   name: fc.name!,
-                  response: { result },
+                  response: normalizeFunctionResponse(result),
                 },
               });
             } catch (error) {

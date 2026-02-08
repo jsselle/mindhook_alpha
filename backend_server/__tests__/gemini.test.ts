@@ -134,6 +134,58 @@ describe('Gemini Client', () => {
             expect(onError).not.toHaveBeenCalled();
         });
 
+        it('sends tool results back as direct response objects', async () => {
+            const generateContentStream = jest
+                .fn()
+                .mockResolvedValueOnce(
+                    createAsyncStream([
+                        {
+                            functionCalls: [{ name: 'create_reminder', args: { title: 'Pick up my food' } }],
+                        },
+                    ]),
+                )
+                .mockResolvedValueOnce(
+                    createAsyncStream([
+                        { text: 'Reminder set' },
+                    ]),
+                );
+
+            jest.spyOn(client, 'getGenAI').mockReturnValue({
+                models: { generateContentStream },
+            } as never);
+            jest.spyOn(toolDefs, 'getToolDefinitions').mockReturnValue([
+                {
+                    name: 'create_reminder',
+                    description: 'mock tool',
+                    parameters: { type: 'OBJECT', properties: {} },
+                },
+            ] as never);
+
+            await client.streamGeneration(
+                buildContents('sys', 'hello', []),
+                {
+                    onToken: jest.fn(),
+                    onToolCall: jest.fn().mockResolvedValue({
+                        reminder_id: 'r1',
+                        status: 'scheduled',
+                    }),
+                    onComplete: jest.fn(),
+                    onError: jest.fn(),
+                },
+            );
+
+            expect(generateContentStream).toHaveBeenCalledTimes(2);
+            const secondCall = generateContentStream.mock.calls[1][0];
+            const lastContent = secondCall.contents[secondCall.contents.length - 1];
+            const functionResponse = lastContent.parts[0].functionResponse;
+
+            expect(functionResponse.name).toBe('create_reminder');
+            expect(functionResponse.response).toEqual({
+                reminder_id: 'r1',
+                status: 'scheduled',
+            });
+        });
+
         it('streams candidate part text when chunk.text is empty', async () => {
             const generateContentStream = jest.fn().mockResolvedValue(
                 createAsyncStream([

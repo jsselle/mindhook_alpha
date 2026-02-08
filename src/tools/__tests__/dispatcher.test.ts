@@ -1,4 +1,9 @@
-import { executeToolCall, TOOL_ERROR_CODES, ToolError } from '../dispatcher';
+import {
+    executeToolCall,
+    setReminderNotificationScheduler,
+    TOOL_ERROR_CODES,
+    ToolError,
+} from '../dispatcher';
 
 // Mock the API modules
 jest.mock('../../api/deviceWriteApi');
@@ -13,10 +18,24 @@ import * as writeApi from '../../api/deviceWriteApi';
 import { generateUUID } from '../../utils/uuid';
 
 describe('Tool Dispatcher', () => {
+    let scheduleReminderMock: jest.Mock;
+    let cancelReminderNotificationsMock: jest.Mock;
+
     beforeEach(() => {
         jest.clearAllMocks();
         (readApi.attachmentExists as jest.Mock).mockResolvedValue(true);
+        (readApi.getReminderById as jest.Mock).mockResolvedValue(null);
+        (readApi.listReminders as jest.Mock).mockResolvedValue([]);
         (generateUUID as jest.Mock).mockReturnValue('generated-id-1');
+        scheduleReminderMock = jest.fn().mockResolvedValue({
+            due_notification_id: null,
+            pre_notification_id: null,
+        });
+        cancelReminderNotificationsMock = jest.fn().mockResolvedValue(undefined);
+        setReminderNotificationScheduler({
+            scheduleReminder: scheduleReminderMock,
+            cancelReminderNotifications: cancelReminderNotificationsMock,
+        });
     });
 
     describe('schema_version validation', () => {
@@ -203,6 +222,297 @@ describe('Tool Dispatcher', () => {
                 expect.objectContaining({ id: 'generated-id-1' })
             );
             expect(result).toEqual({ entity_index_id: 'generated-id-1' });
+        });
+    });
+
+    describe('reminder tools', () => {
+        const baseReminder = {
+            id: 'rem-1',
+            title: 'Pay bill',
+            topic: null,
+            notes: null,
+            due_at: 1700000600000,
+            timezone: 'America/Los_Angeles',
+            status: 'scheduled',
+            source_message_id: null,
+            source_run_id: null,
+            pre_alert_minutes: 10,
+            due_notification_id: null,
+            pre_notification_id: null,
+            delivered_at: null,
+            completed_at: null,
+            deleted_at: null,
+            deleted_reason: null,
+            last_error: null,
+            metadata_json: null,
+            created_at: 1700000000000,
+            updated_at: 1700000000000,
+        };
+
+        beforeEach(() => {
+            jest.spyOn(Date, 'now').mockReturnValue(1700000000000);
+        });
+
+        afterEach(() => {
+            jest.restoreAllMocks();
+        });
+
+        it('create_reminder rejects past due dates', async () => {
+            await expect(
+                executeToolCall('create_reminder', {
+                    title: 'Late task',
+                    due_at: 1699999969000,
+                    timezone: 'America/Los_Angeles',
+                    created_at: 1700000000000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('create_reminder rejects due dates farther than 2 years', async () => {
+            await expect(
+                executeToolCall('create_reminder', {
+                    title: 'Far future task',
+                    due_at: 1763072000001,
+                    timezone: 'America/Los_Angeles',
+                    created_at: 1700000000000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('create_reminder persists reminder and event', async () => {
+            scheduleReminderMock.mockResolvedValueOnce({
+                due_notification_id: 'due-1',
+                pre_notification_id: 'pre-1',
+            });
+            const result = await executeToolCall('create_reminder', {
+                reminder_id: 'rem-1',
+                title: 'Pay bill',
+                due_at: 1700000600000,
+                timezone: 'America/Los_Angeles',
+                pre_alert_minutes: 10,
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(writeApi.insertReminder).toHaveBeenCalledWith(expect.objectContaining({
+                id: 'rem-1',
+                status: 'scheduled',
+            }));
+            expect(writeApi.insertReminderEvent).toHaveBeenCalledWith(expect.objectContaining({
+                reminder_id: 'rem-1',
+                event_type: 'created',
+            }));
+            expect(writeApi.updateReminder).toHaveBeenCalledWith(expect.objectContaining({
+                id: 'rem-1',
+                patch: expect.objectContaining({
+                    due_notification_id: 'due-1',
+                    pre_notification_id: 'pre-1',
+                }),
+            }));
+            expect(result).toEqual({
+                reminder_id: 'rem-1',
+                status: 'scheduled',
+                due_at: 1700000600000,
+                pre_alert_at: 1700000000000,
+            });
+        });
+
+        it('update_reminder throws FILE_NOT_FOUND for unknown reminder', async () => {
+            await expect(
+                executeToolCall('update_reminder', {
+                    reminder_id: 'missing',
+                    updated_at: 1700000200000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.FILE_NOT_FOUND });
+        });
+
+        it('update_reminder updates existing reminder', async () => {
+            (readApi.getReminderById as jest.Mock)
+                .mockResolvedValueOnce(baseReminder)
+                .mockResolvedValueOnce({ ...baseReminder, title: 'Pay utilities' });
+
+            const result = await executeToolCall('update_reminder', {
+                reminder_id: 'rem-1',
+                title: 'Pay utilities',
+                updated_at: 1700000200000,
+                schema_version: '1',
+            });
+
+            expect(writeApi.updateReminder).toHaveBeenCalledWith(expect.objectContaining({
+                id: 'rem-1',
+                updated_at: 1700000200000,
+                expected_updated_at: 1700000000000,
+            }));
+            expect(writeApi.insertReminderEvent).toHaveBeenCalledWith(expect.objectContaining({
+                reminder_id: 'rem-1',
+                event_type: 'updated',
+            }));
+            expect(result).toEqual({
+                reminder_id: 'rem-1',
+                status: 'scheduled',
+                due_at: 1700000600000,
+                pre_alert_at: 1700000000000,
+            });
+        });
+
+        it('cancel_reminder throws FILE_NOT_FOUND for unknown reminder', async () => {
+            await expect(
+                executeToolCall('cancel_reminder', {
+                    reminder_id: 'missing',
+                    deleted_at: 1700000300000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.FILE_NOT_FOUND });
+        });
+
+        it('cancel_reminder logically deletes reminder', async () => {
+            (readApi.getReminderById as jest.Mock)
+                .mockResolvedValueOnce(baseReminder)
+                .mockResolvedValueOnce({ ...baseReminder, status: 'deleted' });
+
+            const result = await executeToolCall('cancel_reminder', {
+                reminder_id: 'rem-1',
+                deleted_at: 1700000300000,
+                reason: 'user_cancelled',
+                schema_version: '1',
+            });
+
+            expect(writeApi.logicalDeleteReminder).toHaveBeenCalledWith({
+                id: 'rem-1',
+                deleted_at: 1700000300000,
+                reason: 'user_cancelled',
+                updated_at: 1700000300000,
+                expected_updated_at: 1700000000000,
+            });
+            expect(writeApi.insertReminderEvent).toHaveBeenCalledWith(expect.objectContaining({
+                reminder_id: 'rem-1',
+                event_type: 'deleted',
+                actor: 'llm',
+            }));
+            expect(result).toEqual({
+                reminder_id: 'rem-1',
+                status: 'deleted',
+                deleted_at: 1700000300000,
+            });
+        });
+
+        it('cancel_reminder supports explicit actor override', async () => {
+            (readApi.getReminderById as jest.Mock)
+                .mockResolvedValueOnce(baseReminder)
+                .mockResolvedValueOnce({ ...baseReminder, status: 'deleted' });
+
+            await executeToolCall('cancel_reminder', {
+                reminder_id: 'rem-1',
+                deleted_at: 1700000300000,
+                reason: 'deleted_from_drawer',
+                actor: 'user',
+                schema_version: '1',
+            });
+
+            expect(writeApi.insertReminderEvent).toHaveBeenCalledWith(expect.objectContaining({
+                reminder_id: 'rem-1',
+                event_type: 'deleted',
+                actor: 'user',
+            }));
+        });
+
+        it('update_reminder rejects immutable created_at', async () => {
+            (readApi.getReminderById as jest.Mock).mockResolvedValueOnce(baseReminder);
+
+            await expect(
+                executeToolCall('update_reminder', {
+                    reminder_id: 'rem-1',
+                    created_at: 123,
+                    updated_at: 1700000200000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('update_reminder rejects null timezone', async () => {
+            (readApi.getReminderById as jest.Mock).mockResolvedValueOnce(baseReminder);
+
+            await expect(
+                executeToolCall('update_reminder', {
+                    reminder_id: 'rem-1',
+                    timezone: null,
+                    updated_at: 1700000200000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('update_reminder rejects null title', async () => {
+            (readApi.getReminderById as jest.Mock).mockResolvedValueOnce(baseReminder);
+
+            await expect(
+                executeToolCall('update_reminder', {
+                    reminder_id: 'rem-1',
+                    title: null,
+                    updated_at: 1700000200000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('update_reminder rejects due dates farther than 2 years', async () => {
+            (readApi.getReminderById as jest.Mock).mockResolvedValueOnce(baseReminder);
+
+            await expect(
+                executeToolCall('update_reminder', {
+                    reminder_id: 'rem-1',
+                    due_at: 1763072000001,
+                    updated_at: 1700000200000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_ARGS });
+        });
+
+        it('create_reminder persists schedule_error and throws when scheduler fails', async () => {
+            scheduleReminderMock.mockRejectedValueOnce(new Error('notification permission denied'));
+
+            await expect(
+                executeToolCall('create_reminder', {
+                    reminder_id: 'rem-1',
+                    title: 'Pay bill',
+                    due_at: 1700000600000,
+                    timezone: 'America/Los_Angeles',
+                    created_at: 1700000000000,
+                    schema_version: '1',
+                })
+            ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INTERNAL_ERROR, retryable: true });
+
+            expect(writeApi.updateReminder).toHaveBeenCalledWith(expect.objectContaining({
+                id: 'rem-1',
+                patch: { last_error: 'notification permission denied' },
+            }));
+            expect(writeApi.insertReminderEvent).toHaveBeenCalledWith(expect.objectContaining({
+                reminder_id: 'rem-1',
+                event_type: 'schedule_error',
+            }));
+        });
+
+        it('list_reminders forwards filters', async () => {
+            (readApi.listReminders as jest.Mock).mockResolvedValueOnce([baseReminder]);
+
+            const result = await executeToolCall('list_reminders', {
+                statuses: ['scheduled'],
+                include_deleted: false,
+                limit: 10,
+                offset: 5,
+                schema_version: '1',
+            });
+
+            expect(readApi.listReminders).toHaveBeenCalledWith({
+                statuses: ['scheduled'],
+                include_deleted: false,
+                limit: 10,
+                offset: 5,
+            });
+            expect(result).toEqual({ reminders: [baseReminder] });
         });
     });
 

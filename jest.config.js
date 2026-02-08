@@ -15,7 +15,8 @@ module.exports = {
     '^expo-sqlite$': '<rootDir>/src/__mocks__/expo-sqlite.ts',
     '^expo-crypto$': '<rootDir>/src/__mocks__/expo-crypto.ts',
     '^expo-file-system$': '<rootDir>/src/__mocks__/expo-file-system.ts',
-    '^expo-file-system/legacy$': '<rootDir>/src/__mocks__/expo-file-system.ts'
+    '^expo-file-system/legacy$': '<rootDir>/src/__mocks__/expo-file-system.ts',
+    '^expo-notifications$': '<rootDir>/src/__mocks__/expo-notifications.ts'
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {

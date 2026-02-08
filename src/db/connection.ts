@@ -29,6 +29,31 @@ export const initializeDatabase = async (): Promise<void> => {
         { name: 'tags_json', sqlType: 'TEXT' },
         { name: 'event_at', sqlType: 'INTEGER' },
     ]);
+    await ensureColumns(db, 'reminders', [
+        { name: 'topic', sqlType: 'TEXT' },
+        { name: 'notes', sqlType: 'TEXT' },
+        { name: 'pre_alert_minutes', sqlType: 'INTEGER' },
+        { name: 'due_notification_id', sqlType: 'TEXT' },
+        { name: 'pre_notification_id', sqlType: 'TEXT' },
+        { name: 'delivered_at', sqlType: 'INTEGER' },
+        { name: 'completed_at', sqlType: 'INTEGER' },
+        { name: 'deleted_at', sqlType: 'INTEGER' },
+        { name: 'deleted_reason', sqlType: 'TEXT' },
+        { name: 'last_error', sqlType: 'TEXT' },
+        { name: 'metadata_json', sqlType: 'TEXT' },
+        { name: 'updated_at', sqlType: 'INTEGER' },
+    ]);
+    await ensureColumns(db, 'pending_reminder_replies', [
+        { name: 'typed_text', sqlType: 'TEXT' },
+        { name: 'notification_action_id', sqlType: 'TEXT' },
+        { name: 'trigger_kind', sqlType: 'TEXT' },
+        { name: 'created_at', sqlType: 'INTEGER' },
+        { name: 'consumed_at', sqlType: 'INTEGER' },
+    ]);
+    await db.execAsync(`
+    UPDATE reminders SET updated_at = created_at WHERE updated_at IS NULL;
+    UPDATE reminders SET pre_alert_minutes = 10 WHERE pre_alert_minutes IS NULL;
+  `);
 
     // Create post-migration indexes that depend on newly added columns.
     if (await hasColumn(db, 'attachment_metadata', 'event_at')) {
@@ -52,7 +77,10 @@ export const resetDatabase = async (): Promise<void> => {
 
     // Drop all tables in reverse dependency order
     await db.execAsync(`
+    DROP TABLE IF EXISTS pending_reminder_replies;
     DROP TABLE IF EXISTS memory_search_fts;
+    DROP TABLE IF EXISTS reminder_events;
+    DROP TABLE IF EXISTS reminders;
     DROP TABLE IF EXISTS memory_tags;
     DROP TABLE IF EXISTS entity_index;
     DROP TABLE IF EXISTS memory_items;

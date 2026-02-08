@@ -43,6 +43,10 @@ describe('activityMapping', () => {
             expect(TOOL_LABELS.get_attachment_bundle).toBe('Loading attachment...');
             expect(TOOL_LABELS.get_message_with_attachments).toBe('Loading message...');
             expect(TOOL_LABELS.recent_messages).toBe('Loading context...');
+            expect(TOOL_LABELS.create_reminder).toBe('Creating reminder...');
+            expect(TOOL_LABELS.update_reminder).toBe('Updating reminder...');
+            expect(TOOL_LABELS.cancel_reminder).toBe('Cancelling reminder...');
+            expect(TOOL_LABELS.list_reminders).toBe('Loading reminders...');
         });
     });
 

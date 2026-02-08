@@ -16,6 +16,8 @@ jest.mock('../../storage/fileManager', () => ({
 
 class MockWebSocket {
     static instances: MockWebSocket[] = [];
+    static OPEN = 1;
+    static CLOSED = 3;
 
     readyState = 1;
     url: string;
@@ -297,6 +299,76 @@ describe('useWebSocket termination handling', () => {
         expect(hookState!.activityMessage).toBeNull();
         expect(hookState!.assistantDraft).toBe('');
         expect(hookState!.error).toBeNull();
+
+        await act(async () => {
+            renderer!.unmount();
+        });
+    });
+
+    it('appends deterministic fallback text when reminder scheduling tool call fails', async () => {
+        let hookState: ReturnType<typeof useWebSocket> | null = null;
+
+        const HookHarness: React.FC = () => {
+            hookState = useWebSocket();
+            return null;
+        };
+
+        let renderer: TestRenderer.ReactTestRenderer;
+        await act(async () => {
+            renderer = TestRenderer.create(React.createElement(HookHarness));
+        });
+
+        const onToolCall = jest.fn(async () => {
+            throw new Error('Failed to schedule reminder: notification permission denied');
+        });
+        const runPromise = hookState!.sendMessage(
+            'Remind me tomorrow',
+            [],
+            [],
+            onToolCall,
+        );
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const socket = MockWebSocket.instances[0];
+        await act(async () => {
+            socket.triggerOpen();
+            socket.triggerMessage({
+                type: 'tool_call',
+                call_id: 'call-1',
+                tool: 'create_reminder',
+                args: {},
+                timeout_ms: 15000,
+            });
+        });
+        await flushPromises();
+        await flushPromises();
+        expect(onToolCall).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            socket.triggerMessage({
+                type: 'final_response',
+                message: {
+                    message_id: 'assistant-2',
+                    role: 'assistant',
+                    text: 'Your reminder is saved.',
+                    created_at: 123,
+                },
+                citations: [],
+                tool_summary: { calls: 1, errors: 1 },
+            });
+            socket.triggerClose(1000, 'run_complete');
+        });
+
+        await expect(runPromise).resolves.toEqual(expect.objectContaining({
+            message: expect.objectContaining({
+                text: expect.stringContaining(
+                    'I saved the reminder but could not schedule the alert. Please reopen the app and I will retry.',
+                ),
+            }),
+        }));
 
         await act(async () => {
             renderer!.unmount();

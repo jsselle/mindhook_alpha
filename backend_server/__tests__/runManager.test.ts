@@ -218,6 +218,78 @@ describe('RunManager', () => {
         expect(socket.close).toHaveBeenCalledWith(1000, 'run_complete');
     });
 
+    it('deduplicates repeated identical reminder create calls within one run', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+        const args = {
+            title: 'Pick up my food',
+            timezone: 'America/Buenos_Aires',
+            created_at: 1770579906488,
+            due_at: 1770580506488,
+            schema_version: '1',
+        };
+
+        streamGeneration.mockImplementation(async (_: unknown, callbacks: {
+            onToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+            onComplete: (text: string) => void;
+        }) => {
+            const first = callbacks.onToolCall('create_reminder', args);
+            await new Promise(resolve => setImmediate(resolve));
+
+            const outbound = (socket.send as jest.Mock).mock.calls.map(call => JSON.parse(call[0]));
+            const firstToolCall = outbound.find(msg => msg.type === 'tool_call');
+            expect(firstToolCall).toBeDefined();
+
+            socket._trigger('message', JSON.stringify({
+                protocol_version: PROTOCOL_VERSION,
+                app_version: '1.0.0',
+                type: 'tool_result',
+                run_id: 'r1',
+                seq: 2,
+                call_id: firstToolCall.call_id,
+                tool: 'create_reminder',
+                result: {
+                    ok: true,
+                    data: {
+                        reminder_id: 'rem-1',
+                        status: 'scheduled',
+                        due_at: 1770580506488,
+                    },
+                },
+            }));
+
+            const firstResult = await first;
+            const secondResult = await callbacks.onToolCall('create_reminder', args);
+            expect(secondResult).toEqual(firstResult);
+
+            callbacks.onComplete('Done');
+        });
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'hello', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setImmediate(resolve));
+
+        const outbound = (socket.send as jest.Mock).mock.calls.map(call => JSON.parse(call[0]));
+        const toolCalls = outbound.filter(msg => msg.type === 'tool_call');
+        const finalMsg = outbound.find(msg => msg.type === 'final_response');
+
+        expect(toolCalls).toHaveLength(1);
+        expect(finalMsg).toBeDefined();
+        expect(finalMsg.tool_summary).toEqual({ calls: 1, errors: 0 });
+    });
+
     it('enforces a non-empty final assistant message when model output is blank', async () => {
         const socket = createMockSocket();
         const { streamGeneration } = require('../src/gemini/client');

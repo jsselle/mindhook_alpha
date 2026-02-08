@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
     ActivityIndicator,
     Alert,
     KeyboardAvoidingView,
     Modal,
+    PanResponder,
     Platform,
     Pressable,
     ScrollView,
@@ -13,6 +15,7 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography } from '../../theme/tokens';
 import {
     deleteAttachmentById,
@@ -20,21 +23,37 @@ import {
     insertMessage,
     linkMessageAttachment,
 } from '../api/deviceWriteApi';
-import { getAttachmentBundle, getMessageWithAttachments } from '../api/deviceReadApi';
+import { getAttachmentBundle, getMessageWithAttachments, getReminderById } from '../api/deviceReadApi';
 import { AttachmentChip } from '../components/AttachmentChip';
 import { AttachmentRenderer } from '../components/AttachmentRenderer';
 import { CitationList } from '../components/CitationList';
 import { ComposerRow } from '../components/ComposerRow';
 import { DisplayMessage, MessageList } from '../components/MessageList';
+import { ReminderDrawer } from '../components/ReminderDrawer';
 import { getDatabase, initializeDatabase } from '../db/connection';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useImagePicker } from '../hooks/useImagePicker';
+import { useReminderDrawer } from '../hooks/useReminderDrawer';
 import { ConversationMessage, ToolCallPayload, useWebSocket } from '../hooks/useWebSocket';
+import { bootstrapNotificationRuntime } from '../notifications/notificationBootstrap';
 import { deleteAttachment as deleteAttachmentFile } from '../storage/fileManager';
 import { executeToolCall } from '../tools/dispatcher';
-import { AttachmentRow, Citation } from '../types/domain';
+import { AttachmentRow, Citation, ReminderRow } from '../types/domain';
 import { nowMs } from '../utils/time';
 import { generateUUID } from '../utils/uuid';
+import { PendingReminderReply } from '../notifications/replyBridgeStore';
+import {
+    buildReminderReplyEnvelope,
+    logReplySentToLlm,
+    processNextPendingReminderReply,
+    ReminderReplyDraft,
+} from './reminderReplyForegroundBridge';
+import {
+    canOpenReminderDrawerFromButton,
+    LEFT_EDGE_THRESHOLD_PX,
+    shouldCaptureReminderEdgeGesture,
+    shouldOpenReminderDrawerFromSwipe,
+} from './reminderDrawerGesture';
 
 const DEBUG_TABLES = ['messages', 'attachments', 'message_attachments', 'attachment_metadata', 'memory_items', 'memory_tags', 'memory_search_fts', 'entity_index'] as const;
 const DEBUG_TABLE_ORDER_BY: Record<string, string> = {
@@ -64,6 +83,11 @@ export const ChatScreen: React.FC = () => {
     const [debugSelectedTable, setDebugSelectedTable] = useState('messages');
     const [debugRows, setDebugRows] = useState<Array<Record<string, unknown>>>([]);
     const [debugCounts, setDebugCounts] = useState<Record<string, number>>({});
+    const [composerDraftText, setComposerDraftText] = useState<string | null>(null);
+    const [manualReminderReplyPending, setManualReminderReplyPending] = useState<PendingReminderReply | null>(null);
+    const pendingReplyProcessingRef = useRef(false);
+    const reminderGestureFromLeftEdgeRef = useRef(false);
+    const reminderDrawer = useReminderDrawer();
 
     const { status, activityMessage, assistantDraft, error, cancelActiveRun, sendMessage } = useWebSocket();
     const imagePicker = useImagePicker();
@@ -74,6 +98,7 @@ export const ChatScreen: React.FC = () => {
         const init = async () => {
             try {
                 await initializeDatabase();
+                await bootstrapNotificationRuntime();
                 if (mounted) {
                     setDbReady(true);
                 }
@@ -131,6 +156,74 @@ export const ChatScreen: React.FC = () => {
         }
     }, [sendMessage, handleToolCall]);
 
+    const sendReminderReplyDraft = useCallback(async (draft: ReminderReplyDraft) => {
+        if (draft.composer_prefill) {
+            setComposerDraftText(draft.composer_prefill);
+        }
+        const messageId = generateUUID();
+        const createdAt = nowMs();
+        await insertMessage({
+            id: messageId,
+            role: 'user',
+            text: draft.visible_text,
+            created_at: createdAt,
+        });
+        setMessages((prev) => [
+            ...prev,
+            {
+                id: messageId,
+                role: 'user',
+                text: draft.visible_text,
+                created_at: createdAt,
+            },
+        ]);
+
+        const conversation: ConversationMessage[] = [...messages, {
+            id: messageId,
+            role: 'user' as const,
+            text: draft.visible_text,
+            created_at: createdAt,
+        }].flatMap(toConversationMessage);
+
+        await runBackend(draft.llm_text, [], conversation);
+    }, [messages, runBackend, toConversationMessage]);
+
+    const buildManualReminderContext = useCallback(async (pending: PendingReminderReply): Promise<ReminderRow | null> => {
+        return getReminderById({ reminder_id: pending.reminder_id });
+    }, []);
+
+    const attemptPendingReminderReplyAutoSend = useCallback(async () => {
+        if (!dbReady) return;
+        if (pendingReplyProcessingRef.current) return;
+        if (status === 'connecting' || status === 'running') return;
+        if (manualReminderReplyPending) return;
+
+        pendingReplyProcessingRef.current = true;
+        try {
+            await processNextPendingReminderReply({
+                sendDraft: async (draft) => {
+                    await sendReminderReplyDraft(draft);
+                },
+                onNeedsConfirmation: async (draft, pending) => {
+                    setManualReminderReplyPending(pending);
+                    setComposerDraftText(draft.composer_prefill);
+                },
+            });
+        } finally {
+            pendingReplyProcessingRef.current = false;
+        }
+    }, [dbReady, manualReminderReplyPending, sendReminderReplyDraft, status]);
+
+    useFocusEffect(useCallback(() => {
+        void attemptPendingReminderReplyAutoSend();
+    }, [attemptPendingReminderReplyAutoSend]));
+
+    useEffect(() => {
+        if (!dbReady) return;
+        if (status === 'connecting' || status === 'running') return;
+        void attemptPendingReminderReplyAutoSend();
+    }, [attemptPendingReminderReplyAutoSend, dbReady, status]);
+
     const loadDebugCounts = useCallback(async () => {
         setDebugLoading(true);
         setDebugError(null);
@@ -183,6 +276,16 @@ export const ChatScreen: React.FC = () => {
 
         const messageId = generateUUID();
         const createdAt = nowMs();
+        let backendText = text;
+        const manualPending = manualReminderReplyPending;
+        if (manualPending) {
+            const reminder = await buildManualReminderContext(manualPending);
+            backendText = buildReminderReplyEnvelope({
+                pending: manualPending,
+                reminder,
+                userMessage: text,
+            });
+        }
 
         await insertMessage({ id: messageId, role: 'user', text, created_at: createdAt });
 
@@ -213,11 +316,29 @@ export const ChatScreen: React.FC = () => {
         }].flatMap(toConversationMessage);
 
         try {
-            await runBackend(text, attachmentsToSend, conversation);
+            await runBackend(backendText, attachmentsToSend, conversation);
+            if (manualPending) {
+                const reminder = await buildManualReminderContext(manualPending);
+                await logReplySentToLlm({
+                    pending: manualPending,
+                    reminder,
+                });
+                setManualReminderReplyPending(null);
+                setComposerDraftText(null);
+            }
         } catch {
             // runBackend/useWebSocket already drives visible error state for send failures.
         }
-    }, [dbReady, pendingAttachments, runBackend, openDebugExplorer, messages, toConversationMessage]);
+    }, [
+        dbReady,
+        pendingAttachments,
+        runBackend,
+        openDebugExplorer,
+        messages,
+        toConversationMessage,
+        manualReminderReplyPending,
+        buildManualReminderContext,
+    ]);
 
     const addImageAttachment = useCallback(async (source: 'camera' | 'library') => {
         try {
@@ -406,6 +527,44 @@ export const ChatScreen: React.FC = () => {
         setRetryPayload(null);
     }, [cancelActiveRun]);
 
+    const reminderEdgePanResponder = useMemo(() => PanResponder.create({
+        onStartShouldSetPanResponder: (event) => {
+            if (!dbReady || reminderDrawer.state.visible) return false;
+            return event.nativeEvent.locationX <= LEFT_EDGE_THRESHOLD_PX;
+        },
+        onMoveShouldSetPanResponder: (event, gestureState) => {
+            return shouldCaptureReminderEdgeGesture({
+                dbReady,
+                drawerVisible: reminderDrawer.state.visible,
+                // Use initial touch X, not current position, so rightward swipes
+                // still qualify after finger moves away from the left edge.
+                startX: gestureState.x0,
+                dx: gestureState.dx,
+                dy: gestureState.dy,
+            });
+        },
+        onPanResponderGrant: (event) => {
+            reminderGestureFromLeftEdgeRef.current = event.nativeEvent.locationX <= LEFT_EDGE_THRESHOLD_PX;
+        },
+        onPanResponderRelease: (event, gestureState) => {
+            if (!dbReady || reminderDrawer.state.visible) return;
+            const startedAtLeftEdge = reminderGestureFromLeftEdgeRef.current;
+            if (shouldOpenReminderDrawerFromSwipe({
+                dbReady,
+                drawerVisible: reminderDrawer.state.visible,
+                startedAtLeftEdge,
+                dx: gestureState.dx,
+                dy: gestureState.dy,
+            })) {
+                void reminderDrawer.openDrawer();
+            }
+            reminderGestureFromLeftEdgeRef.current = false;
+        },
+        onPanResponderTerminate: () => {
+            reminderGestureFromLeftEdgeRef.current = false;
+        },
+    }), [dbReady, reminderDrawer]);
+
     if (!dbReady && !initError) {
         return (
             <View style={styles.centered}>
@@ -429,6 +588,22 @@ export const ChatScreen: React.FC = () => {
                 style={styles.container}
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             >
+                <View style={styles.topBar}>
+                    <TouchableOpacity
+                        style={styles.reminderButton}
+                        onPress={() => {
+                            if (!canOpenReminderDrawerFromButton(dbReady)) return;
+                            void reminderDrawer.openDrawer();
+                        }}
+                        accessibilityLabel="Open reminders drawer"
+                    >
+                        <Ionicons
+                            name="notifications-outline"
+                            size={18}
+                            color={colors.accent.primary}
+                        />
+                    </TouchableOpacity>
+                </View>
                 <MessageList
                     messages={displayedMessages}
                     onBottomHoldClear={handleBottomHoldClear}
@@ -464,6 +639,13 @@ export const ChatScreen: React.FC = () => {
                         ))}
                     </View>
                 )}
+                {manualReminderReplyPending && (
+                    <View style={styles.pendingRow}>
+                        <Text style={styles.pendingLabel}>
+                            Replying to reminder. Type your message and tap send.
+                        </Text>
+                    </View>
+                )}
 
                 <ComposerRow
                     onSend={handleSend}
@@ -475,6 +657,13 @@ export const ChatScreen: React.FC = () => {
                     attachmentCount={pendingAttachments.length}
                     isSending={status === 'running'}
                     disabled={status === 'connecting' || !dbReady}
+                    draftText={composerDraftText}
+                />
+
+                <View
+                    {...reminderEdgePanResponder.panHandlers}
+                    style={styles.leftEdgeGesture}
+                    pointerEvents={dbReady && !reminderDrawer.state.visible ? 'auto' : 'none'}
                 />
             </KeyboardAvoidingView>
 
@@ -580,6 +769,16 @@ export const ChatScreen: React.FC = () => {
                     </View>
                 </View>
             </Modal>
+
+            <ReminderDrawer
+                visible={reminderDrawer.state.visible}
+                reminders={reminderDrawer.state.reminders}
+                loading={reminderDrawer.state.loading}
+                error={reminderDrawer.state.error}
+                onClose={reminderDrawer.closeDrawer}
+                onEditDate={reminderDrawer.editReminderDate}
+                onDelete={reminderDrawer.deleteReminder}
+            />
         </SafeAreaView>
     );
 };
@@ -587,6 +786,22 @@ export const ChatScreen: React.FC = () => {
 const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: colors.background.primary },
     container: { flex: 1, backgroundColor: colors.background.primary },
+    topBar: {
+        height: 48,
+        paddingHorizontal: spacing.sm,
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+    },
+    reminderButton: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: colors.background.tertiary,
+        borderWidth: 1,
+        borderColor: colors.border.primary,
+    },
     pendingRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
@@ -713,5 +928,13 @@ const styles = StyleSheet.create({
         color: colors.text.primary,
         fontSize: typography.fontSize.xs,
         fontFamily: 'monospace',
+    },
+    leftEdgeGesture: {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 24,
+        zIndex: 20,
     },
 });

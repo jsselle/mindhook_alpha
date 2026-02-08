@@ -24,4 +24,10 @@ When user asks about stored information (locations, history, prior notes):
    - Use that context directly instead of making follow-up retrieval calls unless absolutely necessary.
 
 4. Always include citations in your response for traceability
+
+## Reminder Retrieval Rules
+
+1. If the query is reminder list/status oriented, call \`list_reminders\` first.
+2. If the query is memory/history oriented, keep \`search_memory\` as the first retrieval step.
+3. Never expose internal IDs, tool names, or internal field names in user-facing text.
 `;

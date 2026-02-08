@@ -33,6 +33,16 @@ describe('Database Connection', () => {
             expect(ddlCall).toContain('CREATE TABLE IF NOT EXISTS messages');
             expect(ddlCall).toContain('CREATE TABLE IF NOT EXISTS attachments');
             expect(ddlCall).toContain('CREATE TABLE IF NOT EXISTS memory_items');
+            expect(ddlCall).toContain('CREATE TABLE IF NOT EXISTS reminders');
+        });
+
+        it('runs reminder backfills for updated_at and pre_alert_minutes', async () => {
+            await initializeDatabase();
+
+            const mockDb = getMockDatabase();
+            const allSql = mockDb!.execAsync.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+            expect(allSql).toContain('UPDATE reminders SET updated_at = created_at WHERE updated_at IS NULL;');
+            expect(allSql).toContain('UPDATE reminders SET pre_alert_minutes = 10 WHERE pre_alert_minutes IS NULL;');
         });
     });
 

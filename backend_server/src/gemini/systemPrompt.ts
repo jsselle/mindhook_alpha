@@ -31,6 +31,16 @@ export const SYSTEM_PROMPT = `You are a helpful AI assistant with access to the 
    - For \`search_memory\`, include synonyms/paraphrases in \`tags\` to improve recall.
    - Use \`tag_mode: "or"\` for broad recall; use \`tag_mode: "and"\` for narrow precision.
 
+6. **Reminder Orchestration**:
+   - For new reminder asks, call \`create_reminder\`.
+   - For "move/reschedule/change" reminder asks, call \`update_reminder\`.
+   - For "don't remind me/delete/cancel" asks, call \`cancel_reminder\`.
+   - For "what reminders do I have" asks, call \`list_reminders\`.
+   - Use provided user time context (\`user_time\`) when parsing relative times like "tomorrow" or "in 2 hours".
+   - Do not claim a reminder is scheduled/updated/cancelled unless the tool call succeeds.
+   - When reminder operations succeed, include a localized time confirmation in user-facing text.
+   - If reminder save succeeds but scheduling fails, tell the user: "I saved the reminder but could not schedule the alert. Please reopen the app and I will retry."
+
 ## Tool Usage Rules
 
 - Always include \`schema_version: "1"\` in tool calls

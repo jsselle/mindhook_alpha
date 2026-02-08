@@ -2,7 +2,7 @@ import { DDL_STATEMENTS, SCHEMA_VERSION } from '../schema';
 
 describe('Database Schema', () => {
     it('has valid schema version', () => {
-        expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(1);
+        expect(SCHEMA_VERSION).toBe(5);
     });
 
     it('enables foreign keys', () => {
@@ -17,7 +17,10 @@ describe('Database Schema', () => {
             'attachment_metadata',
             'memory_items',
             'memory_tags',
-            'entity_index'
+            'entity_index',
+            'reminders',
+            'reminder_events',
+            'pending_reminder_replies',
         ];
 
         requiredTables.forEach(table => {
@@ -35,7 +38,12 @@ describe('Database Schema', () => {
             'idx_memory_tags_source',
             'idx_memory_subject',
             'idx_memory_type',
-            'idx_entity_term'
+            'idx_entity_term',
+            'idx_reminders_status_due',
+            'idx_reminders_due_at',
+            'idx_reminders_created_at',
+            'idx_reminder_events_reminder',
+            'idx_pending_reminder_replies_unconsumed',
         ];
 
         requiredIndexes.forEach(idx => {
@@ -47,5 +55,6 @@ describe('Database Schema', () => {
         expect(DDL_STATEMENTS).toContain("role IN ('user', 'assistant', 'system')");
         expect(DDL_STATEMENTS).toContain("type IN ('image', 'audio', 'video', 'file')");
         expect(DDL_STATEMENTS).toContain("kind IN ('transcript', 'scene', 'entities', 'summary', 'claims')");
+        expect(DDL_STATEMENTS).toContain("status IN ('scheduled', 'triggered', 'snoozed', 'completed', 'deleted')");
     });
 });

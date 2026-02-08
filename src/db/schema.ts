@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 export const DDL_STATEMENTS = `
 PRAGMA foreign_keys = ON;
@@ -101,4 +101,66 @@ CREATE TABLE IF NOT EXISTS entity_index (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_entity_term ON entity_index(entity);
+
+-- Reminders table for device-managed reminder lifecycle
+CREATE TABLE IF NOT EXISTS reminders (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  topic TEXT,
+  notes TEXT,
+  due_at INTEGER NOT NULL,
+  timezone TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('scheduled', 'triggered', 'snoozed', 'completed', 'deleted')),
+  source_message_id TEXT,
+  source_run_id TEXT,
+  pre_alert_minutes INTEGER NOT NULL DEFAULT 10,
+  due_notification_id TEXT,
+  pre_notification_id TEXT,
+  delivered_at INTEGER,
+  completed_at INTEGER,
+  deleted_at INTEGER,
+  deleted_reason TEXT,
+  last_error TEXT,
+  metadata_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_status_due ON reminders(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
+CREATE INDEX IF NOT EXISTS idx_reminders_created_at ON reminders(created_at);
+
+CREATE TABLE IF NOT EXISTS reminder_events (
+  id TEXT PRIMARY KEY,
+  reminder_id TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN (
+    'created',
+    'updated',
+    'scheduled_notifications',
+    'pre_alert_triggered',
+    'due_triggered',
+    'snoozed',
+    'completed',
+    'deleted',
+    'reply_requested',
+    'reply_sent_to_llm',
+    'schedule_error'
+  )),
+  event_at INTEGER NOT NULL,
+  actor TEXT NOT NULL CHECK(actor IN ('llm', 'user', 'system')),
+  payload_json TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(reminder_id) REFERENCES reminders(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_reminder_events_reminder ON reminder_events(reminder_id, event_at DESC);
+
+CREATE TABLE IF NOT EXISTS pending_reminder_replies (
+  id TEXT PRIMARY KEY,
+  reminder_id TEXT NOT NULL,
+  typed_text TEXT,
+  notification_action_id TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL CHECK(trigger_kind IN ('due')),
+  created_at INTEGER NOT NULL,
+  consumed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pending_reminder_replies_unconsumed ON pending_reminder_replies(consumed_at, created_at);
 `;

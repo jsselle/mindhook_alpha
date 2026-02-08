@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     StyleSheet,
     Text,
@@ -18,6 +18,7 @@ interface ComposerRowProps {
     attachmentCount?: number;
     isSending: boolean;
     disabled?: boolean;
+    draftText?: string | null;
 }
 
 export const ComposerRow: React.FC<ComposerRowProps> = ({
@@ -30,8 +31,17 @@ export const ComposerRow: React.FC<ComposerRowProps> = ({
     attachmentCount = 0,
     isSending,
     disabled = false,
+    draftText = null,
 }) => {
     const [text, setText] = useState('');
+    const lastAppliedDraftRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (draftText == null) return;
+        if (lastAppliedDraftRef.current === draftText) return;
+        lastAppliedDraftRef.current = draftText;
+        setText(draftText);
+    }, [draftText]);
 
     const handleSend = useCallback(() => {
         const trimmed = text.trim();

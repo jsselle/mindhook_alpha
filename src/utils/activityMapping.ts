@@ -32,6 +32,10 @@ export const TOOL_LABELS: Record<string, string> = {
     get_attachment_bundle: 'Loading attachment...',
     get_message_with_attachments: 'Loading message...',
     recent_messages: 'Loading context...',
+    create_reminder: 'Creating reminder...',
+    update_reminder: 'Updating reminder...',
+    cancel_reminder: 'Cancelling reminder...',
+    list_reminders: 'Loading reminders...',
 };
 
 /**

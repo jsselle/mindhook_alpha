@@ -141,6 +141,97 @@ export const getToolDefinitions = (): FunctionDeclaration[] => [
       ],
     },
   },
+  {
+    name: "create_reminder",
+    description: "Create a device-managed reminder and schedule local notifications",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reminder_id: {
+          type: Type.STRING,
+          description: "Optional; runtime generates if omitted",
+        },
+        title: { type: Type.STRING, description: "Short reminder title" },
+        topic: { type: Type.STRING, nullable: true },
+        notes: { type: Type.STRING, nullable: true },
+        due_at: {
+          type: Type.INTEGER,
+          description: "Unix epoch ms in user's local intent",
+        },
+        timezone: {
+          type: Type.STRING,
+          description: "IANA tz, e.g., America/Los_Angeles",
+        },
+        pre_alert_minutes: {
+          type: Type.INTEGER,
+          nullable: true,
+          description: "Default 10",
+        },
+        source_message_id: { type: Type.STRING, nullable: true },
+        source_run_id: { type: Type.STRING, nullable: true },
+        created_at: { type: Type.INTEGER },
+        schema_version: { type: Type.STRING, enum: ["1"] },
+      },
+      required: ["title", "due_at", "timezone", "created_at", "schema_version"],
+    },
+  },
+  {
+    name: "update_reminder",
+    description: "Update reminder fields, including due date/time and notes; reschedules local notifications",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reminder_id: { type: Type.STRING },
+        title: { type: Type.STRING, nullable: true },
+        topic: { type: Type.STRING, nullable: true },
+        notes: { type: Type.STRING, nullable: true },
+        due_at: { type: Type.INTEGER, nullable: true },
+        timezone: { type: Type.STRING },
+        pre_alert_minutes: { type: Type.INTEGER, nullable: true },
+        status: {
+          type: Type.STRING,
+          enum: ["scheduled", "snoozed", "completed", "deleted"],
+          nullable: true,
+        },
+        updated_at: { type: Type.INTEGER },
+        schema_version: { type: Type.STRING, enum: ["1"] },
+      },
+      required: ["reminder_id", "updated_at", "schema_version"],
+    },
+  },
+  {
+    name: "cancel_reminder",
+    description: "Logical delete reminder and cancel any pending local notifications",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reminder_id: { type: Type.STRING },
+        reason: { type: Type.STRING, nullable: true },
+        deleted_at: { type: Type.INTEGER },
+        schema_version: { type: Type.STRING, enum: ["1"] },
+      },
+      required: ["reminder_id", "deleted_at", "schema_version"],
+    },
+  },
+  {
+    name: "list_reminders",
+    description: "List reminders sorted by due date ascending",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        statuses: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          nullable: true,
+        },
+        include_deleted: { type: Type.BOOLEAN, nullable: true },
+        limit: { type: Type.INTEGER },
+        offset: { type: Type.INTEGER, nullable: true },
+        schema_version: { type: Type.STRING, enum: ["1"] },
+      },
+      required: ["limit", "schema_version"],
+    },
+  },
 
   // READ TOOLS
   {

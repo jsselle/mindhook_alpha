@@ -46,6 +46,8 @@ export class RunManager {
   private seq: number = 0;
   private appVersion: string = "backend-1.0";
   private pendingToolCalls: Map<string, PendingToolCall> = new Map();
+  private inFlightReminderToolCalls: Map<string, Promise<unknown>> = new Map();
+  private completedReminderToolResults: Map<string, unknown> = new Map();
   private toolCallCount: number = 0;
   private toolErrorCount: number = 0;
   private fullResponseText: string = "";
@@ -158,13 +160,25 @@ export class RunManager {
     name: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
+    const dedupeKey = this.getReminderMutationDedupeKey(name, args);
+    if (dedupeKey) {
+      if (this.completedReminderToolResults.has(dedupeKey)) {
+        return this.completedReminderToolResults.get(dedupeKey);
+      }
+
+      const inFlight = this.inFlightReminderToolCalls.get(dedupeKey);
+      if (inFlight) {
+        return inFlight;
+      }
+    }
+
     this.state = "HANDLE_TOOL_CALL";
     this.toolCallCount++;
 
     const call_id = uuidv4();
     const timeout_ms = 15000;
 
-    return new Promise((resolve, reject) => {
+    const toolCallPromise = new Promise<unknown>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingToolCalls.delete(call_id);
         this.toolErrorCount++;
@@ -187,6 +201,20 @@ export class RunManager {
 
       this.sendToolCall(call_id, name, args, timeout_ms);
     });
+
+    if (dedupeKey) {
+      this.inFlightReminderToolCalls.set(dedupeKey, toolCallPromise);
+      toolCallPromise
+        .then((result) => {
+          this.completedReminderToolResults.set(dedupeKey, result);
+          this.inFlightReminderToolCalls.delete(dedupeKey);
+        })
+        .catch(() => {
+          this.inFlightReminderToolCalls.delete(dedupeKey);
+        });
+    }
+
+    return toolCallPromise;
   }
 
   private handleToolResult(msg: ToolResultMessage): void {
@@ -488,6 +516,40 @@ export class RunManager {
       pending.reject(new Error("Connection closed"));
     }
     this.pendingToolCalls.clear();
+    this.inFlightReminderToolCalls.clear();
+    this.completedReminderToolResults.clear();
+  }
+
+  private getReminderMutationDedupeKey(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): string | null {
+    const reminderMutationTools = new Set([
+      "create_reminder",
+      "update_reminder",
+      "cancel_reminder",
+    ]);
+    if (!reminderMutationTools.has(toolName)) {
+      return null;
+    }
+    return `${toolName}|${this.stableStringify(args)}`;
+  }
+
+  private stableStringify(value: unknown): string {
+    if (value === null || typeof value !== "object") {
+      return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item)).join(",")}]`;
+    }
+
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([a], [b]) => a.localeCompare(b),
+    );
+    return `{${entries
+      .map(([k, v]) => `${JSON.stringify(k)}:${this.stableStringify(v)}`)
+      .join(",")}}`;
   }
 
   private logInbound(msg: unknown): void {

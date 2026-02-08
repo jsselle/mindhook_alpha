@@ -22,8 +22,13 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "RECORD_AUDIO",
-        "CAMERA"
-      ]
+        "CAMERA",
+        "POST_NOTIFICATIONS",
+        "RECORD_AUDIO",
+        "CAMERA",
+        "POST_NOTIFICATIONS"
+      ],
+      "package": "com.anonymous.brainapp"
     },
     "web": {
       "output": "static",
@@ -43,7 +48,8 @@
           }
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

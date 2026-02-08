@@ -4,10 +4,21 @@ import {
     EntityIndexRow,
     MemoryItemRow,
     MessageRow,
-    MetadataKind
+    MetadataKind,
+    ReminderEventRow,
+    ReminderRow,
+    ReminderStatus,
 } from '../types/domain';
 
 type TagSourceType = 'memory' | 'attachment_metadata';
+
+const ALLOWED_REMINDER_STATUS_TRANSITIONS: Record<ReminderStatus, ReminderStatus[]> = {
+    scheduled: ['triggered', 'snoozed', 'completed', 'deleted'],
+    snoozed: ['triggered', 'snoozed', 'completed', 'deleted'],
+    triggered: ['snoozed', 'completed', 'deleted'],
+    completed: [],
+    deleted: [],
+};
 
 export const insertMessage = async (row: MessageRow): Promise<void> => {
     const db = getDatabase();
@@ -110,6 +121,161 @@ export const insertEntityIndex = async (row: EntityIndexRow): Promise<void> => {
     );
 };
 
+export const insertReminder = async (row: ReminderRow): Promise<void> => {
+    const db = getDatabase();
+    await db.runAsync(
+        `INSERT OR REPLACE INTO reminders
+     (id, title, topic, notes, due_at, timezone, status, source_message_id, source_run_id,
+      pre_alert_minutes, due_notification_id, pre_notification_id, delivered_at, completed_at,
+      deleted_at, deleted_reason, last_error, metadata_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            row.id,
+            row.title,
+            row.topic,
+            row.notes,
+            row.due_at,
+            row.timezone,
+            row.status,
+            row.source_message_id,
+            row.source_run_id,
+            row.pre_alert_minutes,
+            row.due_notification_id,
+            row.pre_notification_id,
+            row.delivered_at,
+            row.completed_at,
+            row.deleted_at,
+            row.deleted_reason,
+            row.last_error,
+            row.metadata_json,
+            row.created_at,
+            row.updated_at,
+        ]
+    );
+};
+
+export const updateReminder = async (args: {
+    id: string;
+    patch: Partial<ReminderRow>;
+    updated_at: number;
+    expected_updated_at?: number;
+}): Promise<void> => {
+    const db = getDatabase();
+    const existing = await db.getFirstAsync<{ status: ReminderStatus; updated_at: number }>(
+        `SELECT status, updated_at FROM reminders WHERE id = ? LIMIT 1`,
+        [args.id]
+    );
+
+    if (!existing) {
+        throw new Error(`Reminder not found: ${args.id}`);
+    }
+    if (args.expected_updated_at != null && existing.updated_at !== args.expected_updated_at) {
+        throw new Error(`Reminder update conflict for id: ${args.id}`);
+    }
+
+    if (args.patch.status) {
+        assertValidReminderStatusTransition(existing.status, args.patch.status);
+    }
+
+    const allowedPatchFields: Array<keyof ReminderRow> = [
+        'title',
+        'topic',
+        'notes',
+        'due_at',
+        'timezone',
+        'status',
+        'source_message_id',
+        'source_run_id',
+        'pre_alert_minutes',
+        'due_notification_id',
+        'pre_notification_id',
+        'delivered_at',
+        'completed_at',
+        'deleted_at',
+        'deleted_reason',
+        'last_error',
+        'metadata_json',
+    ];
+    const entries = allowedPatchFields
+        .filter((field) => Object.prototype.hasOwnProperty.call(args.patch, field))
+        .map((field) => [field, args.patch[field]] as const);
+
+    const setClauses = entries.map(([field]) => `${field} = ?`);
+    const values = entries.map(([, value]) => value);
+
+    setClauses.push('updated_at = ?');
+    values.push(args.updated_at);
+    const whereClauses = ['id = ?'];
+    values.push(args.id);
+    if (args.expected_updated_at != null) {
+        whereClauses.push('updated_at = ?');
+        values.push(args.expected_updated_at);
+    }
+
+    const result = await db.runAsync(
+        `UPDATE reminders SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
+        values
+    );
+    if (args.expected_updated_at != null && result?.changes === 0) {
+        throw new Error(`Reminder update conflict for id: ${args.id}`);
+    }
+};
+
+export const logicalDeleteReminder = async (args: {
+    id: string;
+    deleted_at: number;
+    reason: string;
+    updated_at: number;
+    expected_updated_at?: number;
+}): Promise<void> => {
+    const db = getDatabase();
+    const existing = await db.getFirstAsync<{ status: ReminderStatus; updated_at: number }>(
+        `SELECT status, updated_at FROM reminders WHERE id = ? LIMIT 1`,
+        [args.id]
+    );
+
+    if (!existing) {
+        throw new Error(`Reminder not found: ${args.id}`);
+    }
+    if (args.expected_updated_at != null && existing.updated_at !== args.expected_updated_at) {
+        throw new Error(`Reminder update conflict for id: ${args.id}`);
+    }
+
+    assertValidReminderStatusTransition(existing.status, 'deleted');
+
+    const params: Array<string | number> = [args.deleted_at, args.reason, args.updated_at, args.id];
+    let sql = `UPDATE reminders
+     SET status = 'deleted', deleted_at = ?, deleted_reason = ?, updated_at = ?
+     WHERE id = ?`;
+    if (args.expected_updated_at != null) {
+        sql += ` AND updated_at = ?`;
+        params.push(args.expected_updated_at);
+    }
+
+    const result = await db.runAsync(sql, params);
+    if (args.expected_updated_at != null && result?.changes === 0) {
+        throw new Error(`Reminder update conflict for id: ${args.id}`);
+    }
+};
+
+export const insertReminderEvent = async (row: ReminderEventRow): Promise<void> => {
+    const db = getDatabase();
+    await db.runAsync(
+        `INSERT OR REPLACE INTO reminder_events
+     (id, reminder_id, event_type, event_at, actor, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+            row.id,
+            row.reminder_id,
+            row.event_type,
+            row.event_at,
+            row.actor,
+            row.payload_json,
+            row.created_at,
+        ]
+    );
+};
+
 const normalizeTags = (tags: string[] | null | undefined): string[] => {
     if (!tags || tags.length === 0) return [];
     const seen = new Set<string>();
@@ -179,5 +345,16 @@ const replaceFtsText = async (
             `INSERT INTO memory_search_fts (source_type, source_id, text) VALUES (?, ?, ?)`,
             [sourceType, sourceId, text]
         );
+    }
+};
+
+const assertValidReminderStatusTransition = (
+    fromStatus: ReminderStatus,
+    toStatus: ReminderStatus
+): void => {
+    if (fromStatus === toStatus) return;
+    const allowed = ALLOWED_REMINDER_STATUS_TRANSITIONS[fromStatus] ?? [];
+    if (!allowed.includes(toStatus)) {
+        throw new Error(`Invalid reminder status transition: ${fromStatus} -> ${toStatus}`);
     }
 };

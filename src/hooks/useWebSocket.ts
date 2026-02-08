@@ -11,6 +11,8 @@ const PROTOCOL_VERSION = '1.0';
 const APP_VERSION = '1.0.0';
 const WS_URL = CONFIG.WS_URL;
 const FRIENDLY_SEND_ERROR = 'Message not sent. Please send it again.';
+const REMINDER_SCHEDULE_FALLBACK =
+    'I saved the reminder but could not schedule the alert. Please reopen the app and I will retry.';
 
 // Message types from backend
 export interface ToolCallPayload {
@@ -59,6 +61,20 @@ interface UserTimeContext {
     utc_offset_minutes: number;
     local_iso: string;
 }
+
+const shouldApplyReminderScheduleFallback = (tool: unknown, message: string): boolean => {
+    if (tool !== 'create_reminder' && tool !== 'update_reminder') {
+        return false;
+    }
+    return /failed to (re)?schedule reminder/i.test(message);
+};
+
+const ensureReminderScheduleFallbackText = (text: string): string => {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return REMINDER_SCHEDULE_FALLBACK;
+    if (trimmed.includes(REMINDER_SCHEDULE_FALLBACK)) return trimmed;
+    return `${trimmed} ${REMINDER_SCHEDULE_FALLBACK}`;
+};
 
 const toLocalIsoWithOffset = (date: Date): string => {
     const pad = (n: number): string => String(Math.trunc(Math.abs(n))).padStart(2, '0');
@@ -178,6 +194,7 @@ export const useWebSocket = (): UseWebSocketResult => {
                     let settled = false;
                     let terminalOutcome: TerminalOutcome = 'none';
                     let cancelledByUser = false;
+                    let needsReminderScheduleFallback = false;
 
                     const settleResolve = (payload: FinalResponsePayload | null) => {
                         if (settled) return;
@@ -282,6 +299,10 @@ export const useWebSocket = (): UseWebSocketResult => {
                                         if (cancelledByUser || settled || socket.readyState !== WebSocket.OPEN) {
                                             return;
                                         }
+                                        const errorMessage = (e as Error).message;
+                                        if (shouldApplyReminderScheduleFallback(msg.tool, errorMessage)) {
+                                            needsReminderScheduleFallback = true;
+                                        }
                                         const toolError = {
                                             protocol_version: PROTOCOL_VERSION,
                                             app_version: APP_VERSION,
@@ -292,7 +313,7 @@ export const useWebSocket = (): UseWebSocketResult => {
                                             tool: msg.tool,
                                             error: {
                                                 code: 'TOOL_EXECUTION_FAILED',
-                                                message: (e as Error).message,
+                                                message: errorMessage,
                                                 retryable: false,
                                             },
                                         };
@@ -304,7 +325,18 @@ export const useWebSocket = (): UseWebSocketResult => {
                                     terminalOutcome = 'complete';
                                     setStatus('complete');
                                     setActivityMessage(null);
-                                    settleResolve(msg as FinalResponsePayload);
+                                    if (needsReminderScheduleFallback) {
+                                        const payload = msg as FinalResponsePayload;
+                                        settleResolve({
+                                            ...payload,
+                                            message: {
+                                                ...payload.message,
+                                                text: ensureReminderScheduleFallbackText(payload.message?.text ?? ''),
+                                            },
+                                        });
+                                    } else {
+                                        settleResolve(msg as FinalResponsePayload);
+                                    }
                                     break;
 
                                 case 'run_error':

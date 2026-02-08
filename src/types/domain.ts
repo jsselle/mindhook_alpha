@@ -5,6 +5,19 @@ export type AttachmentType = 'image' | 'audio' | 'video' | 'file';
 export type MetadataKind = 'transcript' | 'scene' | 'entities' | 'summary' | 'claims';
 export type MemoryType = 'object_location' | 'habit' | 'event' | 'fact';
 export type EntitySourceType = 'attachment' | 'memory' | 'message';
+export type ReminderStatus = 'scheduled' | 'triggered' | 'snoozed' | 'completed' | 'deleted';
+export type ReminderEventType =
+    | 'created'
+    | 'updated'
+    | 'scheduled_notifications'
+    | 'pre_alert_triggered'
+    | 'due_triggered'
+    | 'snoozed'
+    | 'completed'
+    | 'deleted'
+    | 'reply_requested'
+    | 'reply_sent_to_llm'
+    | 'schedule_error';
 
 // ===== ROW TYPES (match SQLite schema) =====
 
@@ -74,6 +87,39 @@ export interface MemoryTagRow {
     source_type: 'memory' | 'attachment_metadata';
     source_id: string;
     tag: string;
+    created_at: number;
+}
+
+export interface ReminderRow {
+    id: string;
+    title: string;
+    topic: string | null;
+    notes: string | null;
+    due_at: number;
+    timezone: string;
+    status: ReminderStatus;
+    source_message_id: string | null;
+    source_run_id: string | null;
+    pre_alert_minutes: number;
+    due_notification_id: string | null;
+    pre_notification_id: string | null;
+    delivered_at: number | null;
+    completed_at: number | null;
+    deleted_at: number | null;
+    deleted_reason: string | null;
+    last_error: string | null;
+    metadata_json: string | null;
+    created_at: number;
+    updated_at: number;
+}
+
+export interface ReminderEventRow {
+    id: string;
+    reminder_id: string;
+    event_type: ReminderEventType;
+    event_at: number;
+    actor: 'llm' | 'user' | 'system';
+    payload_json: string | null;
     created_at: number;
 }
 

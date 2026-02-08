@@ -1,6 +1,14 @@
 import { getMockDatabase, resetMockDatabase } from '../../__mocks__/expo-sqlite';
 import { setDatabaseInstance } from '../../db/connection';
-import { getAttachmentBundle, getRecentMessages, searchAttachments, searchMemory } from '../deviceReadApi';
+import {
+    getAttachmentBundle,
+    getRecentMessages,
+    listReminderEvents,
+    listReminders,
+    listUpcomingReminders,
+    searchAttachments,
+    searchMemory,
+} from '../deviceReadApi';
 
 
 describe('DeviceReadAPI', () => {
@@ -65,6 +73,40 @@ describe('DeviceReadAPI', () => {
             expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
                 expect.stringContaining('ORDER BY created_at DESC'),
                 [20]
+            );
+        });
+    });
+
+    describe('reminders', () => {
+        it('listReminders sorts by due_at then created_at and excludes deleted by default', async () => {
+            await listReminders({ limit: 10 });
+
+            const mockDb = getMockDatabase();
+            expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
+                expect.stringContaining('status != \'deleted\''),
+                [10, 0]
+            );
+            const sql = (mockDb?.getAllAsync as jest.Mock).mock.calls[0][0] as string;
+            expect(sql).toContain('ORDER BY due_at ASC, created_at ASC');
+        });
+
+        it('listUpcomingReminders filters scheduled+snoozed inside horizon', async () => {
+            await listUpcomingReminders({ now_ms: 1000, horizon_ms: 5000, limit: 5 });
+
+            const mockDb = getMockDatabase();
+            expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
+                expect.stringContaining("status IN ('scheduled', 'snoozed')"),
+                [1000, 6000, 5]
+            );
+        });
+
+        it('listReminderEvents returns newest-first for reminder', async () => {
+            await listReminderEvents({ reminder_id: 'rem-1', limit: 20 });
+
+            const mockDb = getMockDatabase();
+            expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
+                expect.stringContaining('ORDER BY event_at DESC'),
+                ['rem-1', 20]
             );
         });
     });

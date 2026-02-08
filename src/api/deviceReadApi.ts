@@ -3,7 +3,10 @@ import {
     AttachmentRow,
     AttachmentType,
     MessageRow,
-    MetadataKind
+    MetadataKind,
+    ReminderEventRow,
+    ReminderRow,
+    ReminderStatus,
 } from '../types/domain';
 import { nowMs } from '../utils/time';
 
@@ -459,5 +462,81 @@ export const getRecentMessages = async (args: {
         `SELECT id, role, text, created_at FROM messages 
      ORDER BY created_at DESC LIMIT ?`,
         [args.limit]
+    );
+};
+
+export const getReminderById = async (args: {
+    reminder_id: string;
+}): Promise<ReminderRow | null> => {
+    const db = getDatabase();
+    return await db.getFirstAsync<ReminderRow>(
+        `SELECT * FROM reminders WHERE id = ? LIMIT 1`,
+        [args.reminder_id]
+    );
+};
+
+export const listReminders = async (args: {
+    statuses?: ReminderStatus[] | null;
+    include_deleted?: boolean;
+    limit: number;
+    offset?: number;
+}): Promise<ReminderRow[]> => {
+    const db = getDatabase();
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (!args.include_deleted) {
+        where.push(`status != 'deleted'`);
+    }
+
+    const statuses = args.statuses ?? null;
+    if (statuses && statuses.length > 0) {
+        const placeholders = statuses.map(() => '?').join(', ');
+        where.push(`status IN (${placeholders})`);
+        params.push(...statuses);
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(args.limit);
+    params.push(args.offset ?? 0);
+
+    return await db.getAllAsync<ReminderRow>(
+        `SELECT * FROM reminders
+     ${whereClause}
+     ORDER BY due_at ASC, created_at ASC
+     LIMIT ? OFFSET ?`,
+        params
+    );
+};
+
+export const listUpcomingReminders = async (args: {
+    now_ms: number;
+    horizon_ms: number;
+    limit: number;
+}): Promise<ReminderRow[]> => {
+    const db = getDatabase();
+    const maxDueAt = args.now_ms + args.horizon_ms;
+    return await db.getAllAsync<ReminderRow>(
+        `SELECT * FROM reminders
+     WHERE status IN ('scheduled', 'snoozed')
+       AND due_at >= ?
+       AND due_at <= ?
+     ORDER BY due_at ASC, created_at ASC
+     LIMIT ?`,
+        [args.now_ms, maxDueAt, args.limit]
+    );
+};
+
+export const listReminderEvents = async (args: {
+    reminder_id: string;
+    limit: number;
+}): Promise<ReminderEventRow[]> => {
+    const db = getDatabase();
+    return await db.getAllAsync<ReminderEventRow>(
+        `SELECT * FROM reminder_events
+     WHERE reminder_id = ?
+     ORDER BY event_at DESC
+     LIMIT ?`,
+        [args.reminder_id, args.limit]
     );
 };
