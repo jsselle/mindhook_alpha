@@ -3,12 +3,51 @@ import Fastify from "fastify";
 import { handleConnection } from "./ws/handler.ts";
 
 export const createServer = async () => {
-  const fastify = Fastify({ logger: true });
+  const fastify = Fastify({ logger: true, trustProxy: true });
 
   await fastify.register(websocket);
 
-  fastify.get("/ws", { websocket: true }, (socket, req) => {
-    handleConnection(socket, req);
+  fastify.addHook("onRequest", async (req) => {
+    if (req.url !== "/ws") return;
+
+    req.log.info(
+      {
+        method: req.method,
+        url: req.url,
+        host: req.headers.host,
+        connection: req.headers.connection,
+        upgrade: req.headers.upgrade,
+        secWebSocketVersion: req.headers["sec-websocket-version"],
+        secWebSocketKeyPresent: Boolean(req.headers["sec-websocket-key"]),
+        secWebSocketProtocol: req.headers["sec-websocket-protocol"],
+        xForwardedProto: req.headers["x-forwarded-proto"],
+        userAgent: req.headers["user-agent"],
+      },
+      "ws request received",
+    );
+  });
+
+  fastify.route({
+    method: "GET",
+    url: "/ws",
+    websocket: true,
+    wsHandler: (socket, req) => {
+      handleConnection(socket, req);
+    },
+    handler: async (req, reply) => {
+      req.log.warn(
+        {
+          connection: req.headers.connection,
+          upgrade: req.headers.upgrade,
+          xForwardedProto: req.headers["x-forwarded-proto"],
+        },
+        "non-websocket request to /ws",
+      );
+      return reply.code(426).send({
+        error: "Upgrade Required",
+        message: "Use a WebSocket client with Upgrade: websocket",
+      });
+    },
   });
 
   // Health check
