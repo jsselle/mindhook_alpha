@@ -42,7 +42,7 @@ describe('Database Connection', () => {
             const mockDb = getMockDatabase();
             const allSql = mockDb!.execAsync.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
             expect(allSql).toContain('UPDATE reminders SET updated_at = created_at WHERE updated_at IS NULL;');
-            expect(allSql).toContain('UPDATE reminders SET pre_alert_minutes = 10 WHERE pre_alert_minutes IS NULL;');
+            expect(allSql).toContain('UPDATE reminders SET pre_alert_minutes = 5 WHERE pre_alert_minutes IS NULL;');
         });
     });
 

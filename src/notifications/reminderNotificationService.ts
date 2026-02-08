@@ -14,6 +14,8 @@ import {
     ReminderNotificationData,
     REMINDER_NOTIFICATION_CATEGORY_DUE,
     REMINDER_NOTIFICATION_CATEGORY_PRE_ALERT,
+    REMINDER_NOTIFICATION_CHANNEL_DUE_ID,
+    REMINDER_NOTIFICATION_CHANNEL_PRE_ALERT_ID,
 } from './types';
 
 const TEN_MINUTES_MS = 10 * 60000;
@@ -36,11 +38,12 @@ export const createReminderNotificationScheduler = () => ({
                     body: `Reminder due now: ${reminder.title}`,
                     categoryIdentifier: REMINDER_NOTIFICATION_CATEGORY_DUE,
                     data: buildNotificationData(reminder, 'due'),
+                    sound: 'default',
                 },
                 trigger: {
                     type: Notifications.SchedulableTriggerInputTypes.DATE,
                     date: new Date(reminder.due_at),
-                    channelId: 'reminders',
+                    channelId: REMINDER_NOTIFICATION_CHANNEL_DUE_ID,
                 },
             });
         }
@@ -53,11 +56,12 @@ export const createReminderNotificationScheduler = () => ({
                     body: `Due at ${new Date(reminder.due_at).toLocaleTimeString()}`,
                     categoryIdentifier: REMINDER_NOTIFICATION_CATEGORY_PRE_ALERT,
                     data: buildNotificationData(reminder, 'pre_alert'),
+                    sound: null,
                 },
                 trigger: {
                     type: Notifications.SchedulableTriggerInputTypes.DATE,
                     date: new Date(preAlertAt),
-                    channelId: 'reminders',
+                    channelId: REMINDER_NOTIFICATION_CHANNEL_PRE_ALERT_ID,
                 },
             });
         }

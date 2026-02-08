@@ -20,7 +20,12 @@ import {
   type ToolErrorMessage,
   type ToolResultMessage,
 } from "../types/messages.ts";
-import { validateEnvelope, validateRunStart } from "./protocol.ts";
+import {
+  validateEnvelope,
+  validateRunStart,
+  validateToolError,
+  validateToolResult,
+} from "./protocol.ts";
 
 type RunState =
   | "WAIT_RUN_START"
@@ -86,10 +91,32 @@ export class RunManager {
           this.handleRunStart(msg as RunStartMessage);
           break;
         case "tool_result":
-          this.handleToolResult(msg as ToolResultMessage);
+          {
+            const validation = validateToolResult(msg as ToolResultMessage);
+            if (!validation.valid) {
+              this.sendError(
+                validation.error!.code,
+                validation.error!.message,
+                false,
+              );
+              return;
+            }
+            this.handleToolResult(msg as ToolResultMessage);
+          }
           break;
         case "tool_error":
-          this.handleToolError(msg as ToolErrorMessage);
+          {
+            const validation = validateToolError(msg as ToolErrorMessage);
+            if (!validation.valid) {
+              this.sendError(
+                validation.error!.code,
+                validation.error!.message,
+                false,
+              );
+              return;
+            }
+            this.handleToolError(msg as ToolErrorMessage);
+          }
           break;
         default:
           this.sendError(
@@ -219,7 +246,30 @@ export class RunManager {
 
   private handleToolResult(msg: ToolResultMessage): void {
     const pending = this.pendingToolCalls.get(msg.call_id);
-    if (!pending) return;
+    if (!pending) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `Unknown tool_result call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
+    if (msg.run_id !== this.runId) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `tool_result run_id mismatch for call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
+    if (msg.tool !== pending.tool) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `tool_result tool mismatch for call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
 
     clearTimeout(pending.timeoutId);
     this.pendingToolCalls.delete(msg.call_id);
@@ -231,7 +281,30 @@ export class RunManager {
 
   private handleToolError(msg: ToolErrorMessage): void {
     const pending = this.pendingToolCalls.get(msg.call_id);
-    if (!pending) return;
+    if (!pending) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `Unknown tool_error call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
+    if (msg.run_id !== this.runId) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `tool_error run_id mismatch for call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
+    if (msg.tool !== pending.tool) {
+      this.sendError(
+        ERROR_CODES.INVALID_MESSAGE,
+        `tool_error tool mismatch for call_id: ${msg.call_id}`,
+        false,
+      );
+      return;
+    }
 
     clearTimeout(pending.timeoutId);
     this.pendingToolCalls.delete(msg.call_id);

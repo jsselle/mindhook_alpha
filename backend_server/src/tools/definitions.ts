@@ -237,7 +237,7 @@ export const getToolDefinitions = (): FunctionDeclaration[] => [
   {
     name: "search_memory",
     description:
-      "Primary retrieval tool. Unified search across memory_items and attachment_metadata using text, tags, and date range. Attachment-based hits include enough attachment context for direct answering without follow-up bundle calls in most cases.",
+      "Primary retrieval tool. Unified search across memory_items, attachment_metadata, and reminders using text, tags, and date range. date_from/date_to should be applied by the device to event_at/created_at style fields for memory/attachments and due_at/created_at for reminders. Return a normalized `items` array where each hit includes `record_type` so the model can clearly distinguish reminder vs attachment vs memory records.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -262,12 +262,21 @@ export const getToolDefinitions = (): FunctionDeclaration[] => [
         date_from: {
           type: Type.INTEGER,
           nullable: true,
-          description: "Inclusive lower bound (Unix epoch ms)",
+          description:
+            "Inclusive lower bound (Unix epoch ms). Also applies to reminder due_at/created_at filtering",
         },
         date_to: {
           type: Type.INTEGER,
           nullable: true,
-          description: "Inclusive upper bound (Unix epoch ms)",
+          description:
+            "Inclusive upper bound (Unix epoch ms). Also applies to reminder due_at/created_at filtering",
+        },
+        record_types: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          nullable: true,
+          description:
+            "Optional record type filter. Supported values: memory_item, attachment_metadata, reminder. If omitted, search all types",
         },
         limit: { type: Type.INTEGER },
         schema_version: { type: Type.STRING, enum: ["1"] },

@@ -12,6 +12,8 @@ When user asks about stored information (locations, history, prior notes):
      - tags: focused keywords + synonyms ["keys","keychain","wallet"]
      - tag_mode: "or" for broad recall, "and" for precise filtering
      - date_from/date_to when user gives timeframe
+   - Interpret search_memory as unified retrieval across memory items, attachment metadata, and reminders
+   - Use per-hit type fields (for example \`record_type\`) to reason correctly about reminder vs attachment vs memory results
 
 2. Formulate answer citing evidence:
    - "Based on your voice note from [date], your keys are..."

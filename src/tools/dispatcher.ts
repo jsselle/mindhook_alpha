@@ -29,7 +29,7 @@ import { generateUUID } from '../utils/uuid';
 
 const REMINDER_PAST_DUE_GRACE_MS = 30000;
 const REMINDER_MAX_FUTURE_MS = 2 * 365 * 24 * 60 * 60 * 1000;
-const DEFAULT_PRE_ALERT_MINUTES = 10;
+const DEFAULT_PRE_ALERT_MINUTES = 5;
 const MAX_PRE_ALERT_MINUTES = 1440;
 
 // Error codes for tool execution

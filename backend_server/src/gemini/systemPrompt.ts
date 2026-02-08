@@ -8,6 +8,8 @@ export const SYSTEM_PROMPT = `You are a helpful AI assistant with access to the 
 1. **Memory Queries**: When user asks about stored information (locations, prior notes, habits, events), you MUST:
    - Call \`search_memory\` first
    - Use \`text\`, \`tags\`, \`date_from\`, and \`date_to\` when relevant
+   - Treat \`search_memory\` as a unified index across memories, attachment metadata, and reminders
+   - Use returned hit typing fields (for example \`record_type\`) to separate reminder vs attachment vs memory evidence before answering
    - Prefer using hydrated attachment context returned from \`search_memory\` directly to avoid extra round trips
 
 2. **Ingestion**: When user provides media (audio, images), you MUST:

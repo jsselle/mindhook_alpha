@@ -363,4 +363,137 @@ describe('RunManager', () => {
         expect(sentMsg.type).toBe('run_error');
         expect(sentMsg.error.code).toBe('UNSUPPORTED_MIME');
     });
+
+    it('rejects tool_result for unknown call_id', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+        streamGeneration.mockImplementation(() => new Promise(() => { }));
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'hello', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+        (socket.send as jest.Mock).mockClear();
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0.0',
+            type: 'tool_result',
+            run_id: 'r1',
+            seq: 2,
+            call_id: 'unknown-call',
+            tool: 'create_reminder',
+            result: { ok: true, data: {} },
+        }));
+
+        const sentMsg = JSON.parse((socket.send as jest.Mock).mock.calls[0][0]);
+        expect(sentMsg.type).toBe('run_error');
+        expect(sentMsg.error.code).toBe('INVALID_MESSAGE');
+        expect(sentMsg.error.message).toContain('Unknown tool_result call_id');
+    });
+
+    it('rejects tool_result when tool name mismatches pending call', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+
+        streamGeneration.mockImplementation(async (_: unknown, callbacks: {
+            onToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+        }) => {
+            const p = callbacks.onToolCall('create_reminder', {
+                title: 'Pick up my food',
+                timezone: 'America/Buenos_Aires',
+                created_at: 1770579906488,
+                due_at: 1770580506488,
+                schema_version: '1',
+            });
+            await new Promise(resolve => setImmediate(resolve));
+            await p;
+        });
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'hello', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+        const outbound = (socket.send as jest.Mock).mock.calls.map(call => JSON.parse(call[0]));
+        const toolCall = outbound.find(msg => msg.type === 'tool_call');
+        expect(toolCall).toBeDefined();
+
+        (socket.send as jest.Mock).mockClear();
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0.0',
+            type: 'tool_result',
+            run_id: 'r1',
+            seq: 2,
+            call_id: toolCall.call_id,
+            tool: 'search_memory',
+            result: { ok: true, data: {} },
+        }));
+
+        const sentMsg = JSON.parse((socket.send as jest.Mock).mock.calls[0][0]);
+        expect(sentMsg.type).toBe('run_error');
+        expect(sentMsg.error.message).toContain('tool_result tool mismatch');
+        socket._trigger('close');
+    });
+
+    it('rejects malformed tool_error payload', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+        streamGeneration.mockImplementation(() => new Promise(() => { }));
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'hello', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+        (socket.send as jest.Mock).mockClear();
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0.0',
+            type: 'tool_error',
+            run_id: 'r1',
+            seq: 2,
+            call_id: 'call-1',
+            tool: 'create_reminder',
+            error: {
+                code: 'TOOL_EXECUTION_FAILED',
+                message: 'boom',
+                retryable: 'no',
+            },
+        }));
+
+        const sentMsg = JSON.parse((socket.send as jest.Mock).mock.calls[0][0]);
+        expect(sentMsg.type).toBe('run_error');
+        expect(sentMsg.error.message).toContain('tool_error.error.retryable must be a boolean');
+    });
 });

@@ -1,4 +1,10 @@
-import { ALLOWED_MIMES, validateEnvelope, validateRunStart } from '../src/ws/protocol';
+import {
+    ALLOWED_MIMES,
+    validateEnvelope,
+    validateRunStart,
+    validateToolError,
+    validateToolResult,
+} from '../src/ws/protocol';
 
 describe('Protocol Validation', () => {
     describe('validateEnvelope', () => {
@@ -209,6 +215,76 @@ describe('Protocol Validation', () => {
         it('excludes unsupported types', () => {
             expect(ALLOWED_MIMES.has('application/pdf')).toBe(false);
             expect(ALLOWED_MIMES.has('text/plain')).toBe(false);
+        });
+    });
+
+    describe('validateToolResult', () => {
+        it('accepts valid tool_result', () => {
+            const result = validateToolResult({
+                protocol_version: '1.0',
+                app_version: '1.0.0',
+                type: 'tool_result',
+                run_id: 'run-1',
+                seq: 2,
+                call_id: 'call-1',
+                tool: 'search_memory',
+                result: { ok: true, data: { items: [] } },
+            });
+            expect(result.valid).toBe(true);
+        });
+
+        it('rejects tool_result with non-true ok', () => {
+            const result = validateToolResult({
+                protocol_version: '1.0',
+                app_version: '1.0.0',
+                type: 'tool_result',
+                run_id: 'run-1',
+                seq: 2,
+                call_id: 'call-1',
+                tool: 'search_memory',
+                result: { ok: false },
+            } as unknown as Parameters<typeof validateToolResult>[0]);
+            expect(result.valid).toBe(false);
+            expect(result.error?.code).toBe('INVALID_MESSAGE');
+        });
+    });
+
+    describe('validateToolError', () => {
+        it('accepts valid tool_error', () => {
+            const result = validateToolError({
+                protocol_version: '1.0',
+                app_version: '1.0.0',
+                type: 'tool_error',
+                run_id: 'run-1',
+                seq: 2,
+                call_id: 'call-1',
+                tool: 'search_memory',
+                error: {
+                    code: 'TOOL_EXECUTION_FAILED',
+                    message: 'boom',
+                    retryable: false,
+                },
+            });
+            expect(result.valid).toBe(true);
+        });
+
+        it('rejects tool_error with invalid retryable', () => {
+            const result = validateToolError({
+                protocol_version: '1.0',
+                app_version: '1.0.0',
+                type: 'tool_error',
+                run_id: 'run-1',
+                seq: 2,
+                call_id: 'call-1',
+                tool: 'search_memory',
+                error: {
+                    code: 'TOOL_EXECUTION_FAILED',
+                    message: 'boom',
+                    retryable: 'no',
+                },
+            } as unknown as Parameters<typeof validateToolError>[0]);
+            expect(result.valid).toBe(false);
+            expect(result.error?.code).toBe('INVALID_MESSAGE');
         });
     });
 });

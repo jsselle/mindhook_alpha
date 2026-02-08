@@ -6,6 +6,7 @@ let scheduledCounter = 0;
 let scheduledNotifications: Array<{ identifier: string; content: unknown; trigger: unknown }> = [];
 
 export const AndroidImportance = {
+    DEFAULT: 3,
     HIGH: 4,
 };
 

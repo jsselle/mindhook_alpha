@@ -18,7 +18,9 @@ import {
     REMINDER_ACTION_SNOOZE_10M,
     REMINDER_NOTIFICATION_CATEGORY_DUE,
     REMINDER_NOTIFICATION_CATEGORY_PRE_ALERT,
-    REMINDER_NOTIFICATION_CHANNEL_ID,
+    REMINDER_NOTIFICATION_CHANNEL_DUE_ID,
+    REMINDER_NOTIFICATION_CHANNEL_PRE_ALERT_ID,
+    ReminderNotificationData,
 } from './types';
 
 let bootstrapped = false;
@@ -34,22 +36,33 @@ export const bootstrapNotificationRuntime = async (): Promise<void> => {
 
     bootstrapPromise = (async () => {
         Notifications.setNotificationHandler({
-            handleNotification: async () => ({
-                shouldShowBanner: true,
-                shouldShowList: true,
-                shouldPlaySound: true,
-                shouldSetBadge: false,
-            }),
+            handleNotification: async (notification) => {
+                const data = extractReminderNotificationData(notification?.request?.content?.data);
+                const isPreAlert = data?.kind === 'pre_alert';
+                return {
+                    shouldShowBanner: !isPreAlert,
+                    shouldShowList: true,
+                    shouldPlaySound: !isPreAlert,
+                    shouldSetBadge: false,
+                };
+            },
         });
 
         await Notifications.requestPermissionsAsync();
 
         try {
-            await Notifications.setNotificationChannelAsync(REMINDER_NOTIFICATION_CHANNEL_ID, {
-                name: 'Reminders',
+            await Notifications.setNotificationChannelAsync(REMINDER_NOTIFICATION_CHANNEL_DUE_ID, {
+                name: 'Reminders (Due)',
                 importance: Notifications.AndroidImportance.HIGH,
                 vibrationPattern: [0, 250, 150, 250],
                 lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+            });
+            await Notifications.setNotificationChannelAsync(REMINDER_NOTIFICATION_CHANNEL_PRE_ALERT_ID, {
+                name: 'Reminders (Heads-up)',
+                importance: Notifications.AndroidImportance.DEFAULT,
+                vibrationPattern: [0],
+                lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+                sound: null,
             });
         } catch {
             // Channel APIs are Android-only; no-op on unsupported platforms.
@@ -105,6 +118,15 @@ export const bootstrapNotificationRuntime = async (): Promise<void> => {
     } finally {
         bootstrapPromise = null;
     }
+};
+
+const extractReminderNotificationData = (data: unknown): ReminderNotificationData | null => {
+    if (!data || typeof data !== 'object') return null;
+    const raw = data as Partial<ReminderNotificationData>;
+    if (!raw.reminder_id || !raw.kind || (raw.kind !== 'pre_alert' && raw.kind !== 'due')) return null;
+    if (typeof raw.due_at !== 'number' || Number.isNaN(raw.due_at)) return null;
+    if (raw.source !== 'reminder_scheduler_v1') return null;
+    return raw as ReminderNotificationData;
 };
 
 export const shutdownNotificationRuntimeForTests = (): void => {

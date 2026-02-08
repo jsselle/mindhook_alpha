@@ -52,7 +52,7 @@ export const initializeDatabase = async (): Promise<void> => {
     ]);
     await db.execAsync(`
     UPDATE reminders SET updated_at = created_at WHERE updated_at IS NULL;
-    UPDATE reminders SET pre_alert_minutes = 10 WHERE pre_alert_minutes IS NULL;
+    UPDATE reminders SET pre_alert_minutes = 5 WHERE pre_alert_minutes IS NULL;
   `);
 
     // Create post-migration indexes that depend on newly added columns.

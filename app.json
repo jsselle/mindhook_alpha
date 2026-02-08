@@ -24,9 +24,7 @@
         "RECORD_AUDIO",
         "CAMERA",
         "POST_NOTIFICATIONS",
-        "RECORD_AUDIO",
-        "CAMERA",
-        "POST_NOTIFICATIONS"
+        "SCHEDULE_EXACT_ALARM"
       ],
       "package": "com.anonymous.brainapp"
     },

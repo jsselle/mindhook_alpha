@@ -2,6 +2,8 @@ import {
   ERROR_CODES,
   PROTOCOL_VERSION,
   type RunStartMessage,
+  type ToolErrorMessage,
+  type ToolResultMessage,
 } from "../types/messages.ts";
 
 // Limits
@@ -197,6 +199,116 @@ export const validateRunStart = (msg: RunStartMessage): ValidationResult => {
       error: {
         code: ERROR_CODES.PAYLOAD_TOO_LARGE,
         message: `Total payload too large: ${totalBytes}`,
+      },
+    };
+  }
+
+  return { valid: true };
+};
+
+export const validateToolResult = (
+  msg: ToolResultMessage,
+): ValidationResult => {
+  if (!msg.call_id || typeof msg.call_id !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_result.call_id must be a string",
+      },
+    };
+  }
+
+  if (!msg.tool || typeof msg.tool !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_result.tool must be a string",
+      },
+    };
+  }
+
+  if (!msg.result || typeof msg.result !== "object") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_result.result must be an object",
+      },
+    };
+  }
+
+  if ((msg.result as { ok?: unknown }).ok !== true) {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_result.result.ok must be true",
+      },
+    };
+  }
+
+  return { valid: true };
+};
+
+export const validateToolError = (msg: ToolErrorMessage): ValidationResult => {
+  if (!msg.call_id || typeof msg.call_id !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.call_id must be a string",
+      },
+    };
+  }
+
+  if (!msg.tool || typeof msg.tool !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.tool must be a string",
+      },
+    };
+  }
+
+  if (!msg.error || typeof msg.error !== "object") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.error must be an object",
+      },
+    };
+  }
+
+  if (typeof msg.error.message !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.error.message must be a string",
+      },
+    };
+  }
+
+  if (typeof msg.error.code !== "string") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.error.code must be a string",
+      },
+    };
+  }
+
+  if (typeof msg.error.retryable !== "boolean") {
+    return {
+      valid: false,
+      error: {
+        code: ERROR_CODES.INVALID_MESSAGE,
+        message: "tool_error.error.retryable must be a boolean",
       },
     };
   }

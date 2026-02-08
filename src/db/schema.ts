@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS reminders (
   status TEXT NOT NULL CHECK(status IN ('scheduled', 'triggered', 'snoozed', 'completed', 'deleted')),
   source_message_id TEXT,
   source_run_id TEXT,
-  pre_alert_minutes INTEGER NOT NULL DEFAULT 10,
+  pre_alert_minutes INTEGER NOT NULL DEFAULT 5,
   due_notification_id TEXT,
   pre_notification_id TEXT,
   delivered_at INTEGER,

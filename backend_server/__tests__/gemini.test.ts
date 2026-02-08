@@ -141,6 +141,19 @@ describe('Gemini Client', () => {
                     createAsyncStream([
                         {
                             functionCalls: [{ name: 'create_reminder', args: { title: 'Pick up my food' } }],
+                            candidates: [
+                                {
+                                    content: {
+                                        parts: [{
+                                            functionCall: {
+                                                name: 'create_reminder',
+                                                args: { title: 'Pick up my food' },
+                                                thought_signature: 'sig-1',
+                                            },
+                                        }],
+                                    },
+                                },
+                            ],
                         },
                     ]),
                 )
@@ -184,6 +197,145 @@ describe('Gemini Client', () => {
                 reminder_id: 'r1',
                 status: 'scheduled',
             });
+        });
+
+        it('preserves model tool-call turn in history before next request', async () => {
+            const generateContentStream = jest
+                .fn()
+                .mockResolvedValueOnce(
+                    createAsyncStream([
+                        {
+                            functionCalls: [{ name: 'create_reminder', args: { title: 'Pick up my food' } }],
+                        },
+                    ]),
+                )
+                .mockResolvedValueOnce(createAsyncStream([{ text: 'done' }]));
+
+            jest.spyOn(client, 'getGenAI').mockReturnValue({
+                models: { generateContentStream },
+            } as never);
+            jest.spyOn(toolDefs, 'getToolDefinitions').mockReturnValue([
+                {
+                    name: 'create_reminder',
+                    description: 'mock tool',
+                    parameters: { type: 'OBJECT', properties: {} },
+                },
+            ] as never);
+
+            await client.streamGeneration(
+                buildContents('sys', 'hello', []),
+                {
+                    onToken: jest.fn(),
+                    onToolCall: jest.fn().mockResolvedValue({ reminder_id: 'r1' }),
+                    onComplete: jest.fn(),
+                    onError: jest.fn(),
+                },
+            );
+
+            const secondCall = generateContentStream.mock.calls[1][0];
+            const allContents = secondCall.contents;
+            const hasModelFunctionCallTurn = allContents.some((entry: {
+                role?: string;
+                parts?: Array<{ functionCall?: { name?: string }; text?: string }>;
+            }) => entry.role === 'model'
+                && Array.isArray(entry.parts)
+                && entry.parts.some((part) =>
+                    part?.functionCall?.name === 'create_reminder'
+                    || (typeof part?.text === 'string'
+                        && part.text.includes('Model requested tool calls:'))
+                ));
+
+            expect(hasModelFunctionCallTurn).toBe(true);
+        });
+
+        it('keeps text from chunk that also carries function calls', async () => {
+            const generateContentStream = jest
+                .fn()
+                .mockResolvedValueOnce(
+                    createAsyncStream([
+                        {
+                            text: 'Working on it... ',
+                            functionCalls: [{ name: 'search_memory', args: { q: 'brain' } }],
+                        },
+                    ]),
+                )
+                .mockResolvedValueOnce(createAsyncStream([{ text: 'Done' }]));
+
+            jest.spyOn(client, 'getGenAI').mockReturnValue({
+                models: { generateContentStream },
+            } as never);
+            jest.spyOn(toolDefs, 'getToolDefinitions').mockReturnValue([
+                {
+                    name: 'search_memory',
+                    description: 'mock tool',
+                    parameters: { type: 'OBJECT', properties: {} },
+                },
+            ] as never);
+
+            const onToken = jest.fn();
+            const onComplete = jest.fn();
+
+            await client.streamGeneration(
+                buildContents('sys', 'hello', []),
+                {
+                    onToken,
+                    onToolCall: jest.fn().mockResolvedValue({ items: [] }),
+                    onComplete,
+                    onError: jest.fn(),
+                },
+            );
+
+            expect(onToken).toHaveBeenCalledWith('Working on it... ');
+            expect(onComplete).toHaveBeenCalledWith('Working on it... Done');
+        });
+
+        it('stops executing tools after max iterations and asks model for final answer', async () => {
+            const generateContentStream = jest
+                .fn()
+                .mockImplementation((_: unknown, callIndex = generateContentStream.mock.calls.length) => {
+                    if (callIndex <= 11) {
+                        return Promise.resolve(
+                            createAsyncStream([
+                                {
+                                    functionCalls: [{ name: 'search_memory', args: { q: 'x' } }],
+                                },
+                            ])
+                        );
+                    }
+                    return Promise.resolve(createAsyncStream([{ text: 'Final answer without more tools' }]));
+                });
+
+            jest.spyOn(client, 'getGenAI').mockReturnValue({
+                models: { generateContentStream },
+            } as never);
+            jest.spyOn(toolDefs, 'getToolDefinitions').mockReturnValue([
+                {
+                    name: 'search_memory',
+                    description: 'mock tool',
+                    parameters: { type: 'OBJECT', properties: {} },
+                },
+            ] as never);
+
+            const onError = jest.fn();
+            const onComplete = jest.fn();
+            const onToolCall = jest.fn().mockResolvedValue({ items: [] });
+
+            await client.streamGeneration(
+                buildContents('sys', 'hello', []),
+                {
+                    onToken: jest.fn(),
+                    onToolCall,
+                    onComplete,
+                    onError,
+                },
+            );
+
+            expect(onError).not.toHaveBeenCalled();
+            expect(onToolCall).toHaveBeenCalledTimes(10);
+            expect(onComplete).toHaveBeenCalledWith('Final answer without more tools');
+            expect(generateContentStream).toHaveBeenCalledTimes(12);
+            const callAfterLimit = generateContentStream.mock.calls[11][0];
+            expect(callAfterLimit.config).toBeUndefined();
         });
 
         it('streams candidate part text when chunk.text is empty', async () => {
