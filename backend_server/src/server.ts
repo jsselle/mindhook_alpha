@@ -10,7 +10,7 @@ export const createServer = async () => {
   fastify.addHook("onRequest", async (req) => {
     if (req.url !== "/ws") return;
 
-    req.log.info(
+    console.info(
       {
         method: req.method,
         url: req.url,
@@ -35,7 +35,7 @@ export const createServer = async () => {
       handleConnection(socket, req);
     },
     handler: async (req, reply) => {
-      req.log.warn(
+      console.warn(
         {
           connection: req.headers.connection,
           upgrade: req.headers.upgrade,
