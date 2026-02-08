@@ -218,6 +218,42 @@ describe('RunManager', () => {
         expect(socket.close).toHaveBeenCalledWith(1000, 'run_complete');
     });
 
+    it('enforces a non-empty final assistant message when model output is blank', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+
+        streamGeneration.mockImplementation(async (_: unknown, callbacks: { onComplete: (text: string) => void }) => {
+            callbacks.onComplete('   ');
+        });
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'hello', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+
+        const outbound = (socket.send as jest.Mock).mock.calls.map(call => JSON.parse(call[0]));
+        const tokenMsg = outbound.find(msg => msg.type === 'assistant_token');
+        const finalMsg = outbound.find(msg => msg.type === 'final_response');
+
+        expect(tokenMsg).toBeDefined();
+        expect(typeof tokenMsg.text).toBe('string');
+        expect(tokenMsg.text.trim().length).toBeGreaterThan(0);
+
+        expect(finalMsg).toBeDefined();
+        expect(typeof finalMsg.message.text).toBe('string');
+        expect(finalMsg.message.text.trim().length).toBeGreaterThan(0);
+    });
+
     it('cleans up pending tool calls on connection close', () => {
         const socket = createMockSocket();
         new RunManager(socket);

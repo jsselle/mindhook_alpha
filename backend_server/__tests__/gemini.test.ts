@@ -133,5 +133,40 @@ describe('Gemini Client', () => {
             expect(onComplete).toHaveBeenCalledWith('Final answer');
             expect(onError).not.toHaveBeenCalled();
         });
+
+        it('streams candidate part text when chunk.text is empty', async () => {
+            const generateContentStream = jest.fn().mockResolvedValue(
+                createAsyncStream([
+                    {
+                        candidates: [
+                            {
+                                content: {
+                                    parts: [{ text: 'Recovered text from candidate parts' }],
+                                },
+                            },
+                        ],
+                    },
+                ]),
+            );
+
+            jest.spyOn(client, 'getGenAI').mockReturnValue({
+                models: { generateContentStream },
+            } as never);
+            jest.spyOn(toolDefs, 'getToolDefinitions').mockReturnValue([] as never);
+
+            const onToken = jest.fn();
+            const onToolCall = jest.fn();
+            const onComplete = jest.fn();
+            const onError = jest.fn();
+
+            await client.streamGeneration(
+                buildContents('sys', 'hello', []),
+                { onToken, onToolCall, onComplete, onError },
+            );
+
+            expect(onToken).toHaveBeenCalledWith('Recovered text from candidate parts');
+            expect(onComplete).toHaveBeenCalledWith('Recovered text from candidate parts');
+            expect(onError).not.toHaveBeenCalled();
+        });
     });
 });

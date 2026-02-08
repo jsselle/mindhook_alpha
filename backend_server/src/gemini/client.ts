@@ -115,6 +115,37 @@ export interface StreamCallbacks {
   onError: (error: Error) => void;
 }
 
+const extractTextFromChunk = (chunk: unknown): string => {
+  if (!chunk || typeof chunk !== "object") return "";
+
+  const directText = (chunk as { text?: unknown }).text;
+  if (typeof directText === "string" && directText.length > 0) {
+    return directText;
+  }
+
+  const candidates = (chunk as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) return "";
+
+  const textParts: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const content = (candidate as { content?: unknown }).content;
+    if (!content || typeof content !== "object") continue;
+    const parts = (content as { parts?: unknown }).parts;
+    if (!Array.isArray(parts)) continue;
+
+    for (const part of parts) {
+      if (!part || typeof part !== "object") continue;
+      const text = (part as { text?: unknown }).text;
+      if (typeof text === "string" && text.length > 0) {
+        textParts.push(text);
+      }
+    }
+  }
+
+  return textParts.join("");
+};
+
 export const streamGeneration = async (
   contents: Content[],
   callbacks: StreamCallbacks,
@@ -174,7 +205,7 @@ export const streamGeneration = async (
           break; // exit inner loop to send function results
         }
 
-        const text = chunk.text;
+        const text = extractTextFromChunk(chunk);
         if (text) {
           fullText += text;
           callbacks.onToken(text);

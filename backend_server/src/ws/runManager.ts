@@ -215,7 +215,12 @@ export class RunManager {
 
   private handleComplete(fullText: string, userMessageId: string): void {
     this.state = "FINALIZE";
-    this.fullResponseText = fullText;
+    const finalText = this.ensureNonEmptyFinalText(fullText);
+    this.fullResponseText = finalText;
+
+    if (!fullText.trim()) {
+      this.sendToken(finalText);
+    }
 
     const finalMsg: FinalResponseMessage = {
       protocol_version: PROTOCOL_VERSION,
@@ -226,7 +231,7 @@ export class RunManager {
       message: {
         message_id: uuidv4(),
         role: "assistant",
-        text: fullText,
+        text: finalText,
         created_at: Date.now(),
       },
       citations: this.citations,
@@ -238,6 +243,19 @@ export class RunManager {
 
     this.send(finalMsg);
     this.close(1000, "run_complete");
+  }
+
+  private ensureNonEmptyFinalText(fullText: string): string {
+    const trimmed = fullText.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+
+    if (this.toolCallCount > 0) {
+      return "I finished processing your request, but I could not generate a readable response. Please ask again and I will summarize it clearly.";
+    }
+
+    return "I could not generate a response just now. Please try again.";
   }
 
   private handleStreamError(error: Error): void {
