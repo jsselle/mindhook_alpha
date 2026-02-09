@@ -2,6 +2,7 @@ import {
     attachmentExists,
     getAttachmentBundle,
     getMessageWithAttachments,
+    messageExists,
     getRecentMessages,
     getReminderById,
     listReminders,
@@ -145,6 +146,8 @@ async function handleStoreAttachmentMetadata(args: Record<string, unknown>) {
 
 async function handleStoreMemoryItem(args: Record<string, unknown>) {
     const memoryItemId = (args.memory_item_id as string) || generateUUID();
+    const rawSourceMessageId = (args.source_message_id as string) ?? null;
+    const safeSourceMessageId = await resolveValidSourceMessageId(rawSourceMessageId);
     const row: MemoryItemRow = {
         id: memoryItemId,
         type: args.type as MemoryType,
@@ -157,7 +160,7 @@ async function handleStoreMemoryItem(args: Record<string, unknown>) {
         time_anchor: (args.time_anchor as number) ?? null,
         confidence: args.confidence as number,
         source_attachment_id: (args.source_attachment_id as string) ?? null,
-        source_message_id: (args.source_message_id as string) ?? null,
+        source_message_id: safeSourceMessageId,
         created_at: args.created_at as number,
     };
     await insertMemoryItem(row);
@@ -585,6 +588,17 @@ const nullableOptionalString = (value: unknown, field: string): string | null =>
         throw new ToolError(TOOL_ERROR_CODES.INVALID_ARGS, `Missing or invalid ${field}`);
     }
     return value;
+};
+
+const resolveValidSourceMessageId = async (
+    sourceMessageId: string | null
+): Promise<string | null> => {
+    if (!sourceMessageId || sourceMessageId.trim().length === 0) {
+        return null;
+    }
+
+    const exists = await messageExists({ message_id: sourceMessageId });
+    return exists ? sourceMessageId : null;
 };
 
 const parsePreAlertMinutes = (value: unknown): number => {

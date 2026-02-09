@@ -2,6 +2,7 @@ import { getDatabase } from "../db/connection";
 import {
   AttachmentRow,
   AttachmentType,
+  MemoryItemRow,
   MessageRow,
   MetadataKind,
   ReminderEventRow,
@@ -448,6 +449,17 @@ export const attachmentExists = async (args: {
   return !!row?.id;
 };
 
+export const messageExists = async (args: {
+  message_id: string;
+}): Promise<boolean> => {
+  const db = getDatabase();
+  const row = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM messages WHERE id = ? LIMIT 1`,
+    [args.message_id],
+  );
+  return !!row?.id;
+};
+
 export const getMessageWithAttachments = async (args: {
   message_id: string;
 }): Promise<{ message: MessageRow; attachments: AttachmentRow[] } | null> => {
@@ -469,6 +481,16 @@ export const getMessageWithAttachments = async (args: {
   );
 
   return { message, attachments };
+};
+
+export const getMemoryItemById = async (args: {
+  memory_item_id: string;
+}): Promise<MemoryItemRow | null> => {
+  const db = getDatabase();
+  return await db.getFirstAsync<MemoryItemRow>(
+    `SELECT * FROM memory_items WHERE id = ? LIMIT 1`,
+    [args.memory_item_id],
+  );
 };
 
 export const getRecentMessages = async (args: {

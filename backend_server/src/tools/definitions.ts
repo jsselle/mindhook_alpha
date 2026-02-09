@@ -167,7 +167,12 @@ export const getToolDefinitions = (): FunctionDeclaration[] => [
           nullable: true,
           description: "Default 10",
         },
-        source_message_id: { type: Type.STRING, nullable: true },
+        source_message_id: {
+          type: Type.STRING,
+          nullable: true,
+          description:
+            "Message ID provenance. Prefer current_user_message_id for memories extracted from this run.",
+        },
         source_run_id: { type: Type.STRING, nullable: true },
         created_at: { type: Type.INTEGER },
         schema_version: { type: Type.STRING, enum: ["1"] },

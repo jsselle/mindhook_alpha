@@ -25,6 +25,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, spacing, typography } from "../../theme/tokens";
 import {
   getAttachmentBundle,
+  getMemoryItemById,
   getMessageWithAttachments,
   getReminderById,
 } from "../api/deviceReadApi";
@@ -39,6 +40,7 @@ import { AttachmentRenderer } from "../components/AttachmentRenderer";
 import { CitationList } from "../components/CitationList";
 import { ComposerRow } from "../components/ComposerRow";
 import { DisplayMessage, MessageList } from "../components/MessageList";
+import { MessageBubble } from "../components/MessageBubble";
 import { ReminderDrawer } from "../components/ReminderDrawer";
 import { getDatabase, initializeDatabase } from "../db/connection";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
@@ -103,6 +105,10 @@ export const ChatScreen: React.FC = () => {
   } | null>(null);
   const [citationPreview, setCitationPreview] = useState<{
     title: string;
+    message?: {
+      role: "user" | "assistant" | "system";
+      text: string;
+    };
     attachments: AttachmentRow[];
   } | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
@@ -536,6 +542,19 @@ export const ChatScreen: React.FC = () => {
 
   const handleCitationPress = useCallback(async (citation: Citation) => {
     try {
+      const openMessagePreview = (
+        title: string,
+        text: string,
+        role: "user" | "assistant" | "system",
+        attachments: AttachmentRow[] = [],
+      ) => {
+        setCitationPreview({
+          title,
+          message: { role, text },
+          attachments,
+        });
+      };
+
       if (citation.attachment_id) {
         const bundle = await getAttachmentBundle({
           attachment_id: citation.attachment_id,
@@ -553,6 +572,15 @@ export const ChatScreen: React.FC = () => {
         const result = await getMessageWithAttachments({
           message_id: citation.message_id,
         });
+        if (result?.message?.text) {
+          openMessagePreview(
+            citation.note || "Source message",
+            result.message.text,
+            result.message.role,
+            result.attachments ?? [],
+          );
+          return;
+        }
         if (result?.attachments?.length) {
           setCitationPreview({
             title: citation.note || "Source message attachments",
@@ -560,10 +588,50 @@ export const ChatScreen: React.FC = () => {
           });
           return;
         }
-        if (result?.message?.text) {
-          Alert.alert("Source message", result.message.text);
+      }
+
+      if (citation.memory_item_id) {
+        const memoryItem = await getMemoryItemById({
+          memory_item_id: citation.memory_item_id,
+        });
+        if (memoryItem?.source_message_id) {
+          const sourceMessage = await getMessageWithAttachments({
+            message_id: memoryItem.source_message_id,
+          });
+          if (sourceMessage?.message?.text) {
+            openMessagePreview(
+              citation.note || "Memory source message",
+              sourceMessage.message.text,
+              sourceMessage.message.role,
+              sourceMessage.attachments ?? [],
+            );
+            return;
+          }
+          if (sourceMessage?.attachments?.length) {
+            setCitationPreview({
+              title: citation.note || "Memory source attachments",
+              attachments: sourceMessage.attachments,
+            });
+            return;
+          }
+        }
+        if (memoryItem?.text) {
+          openMessagePreview(citation.note || "Memory", memoryItem.text, "assistant");
           return;
         }
+        const composedMemoryText = [memoryItem?.subject, memoryItem?.predicate, memoryItem?.object]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        if (composedMemoryText) {
+          openMessagePreview(citation.note || "Memory", composedMemoryText, "assistant");
+          return;
+        }
+      }
+
+      if (citation.note) {
+        openMessagePreview("Citation", citation.note, "assistant");
+        return;
       }
 
       const source =
@@ -830,6 +898,15 @@ export const ChatScreen: React.FC = () => {
               </TouchableOpacity>
             </View>
             <ScrollView contentContainerStyle={styles.previewContent}>
+              {citationPreview?.message && (
+                <View style={styles.previewMessageWrap}>
+                  <MessageBubble
+                    id="citation-preview-message"
+                    role={citationPreview.message.role}
+                    text={citationPreview.message.text}
+                  />
+                </View>
+              )}
               {citationPreview?.attachments.map((att) => (
                 <View key={att.id} style={styles.previewAttachment}>
                   <AttachmentRenderer attachment={att} />
@@ -1020,6 +1097,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: colors.background.tertiary,
     padding: spacing.xs,
+  },
+  previewMessageWrap: {
+    marginHorizontal: -spacing.md,
+    marginTop: -spacing.sm,
   },
   previewBackdropTapArea: {
     ...StyleSheet.absoluteFillObject,

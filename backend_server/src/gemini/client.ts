@@ -41,6 +41,7 @@ export const buildContents = (
   attachments: AttachmentPayload[],
   conversation: ConversationTurn[] = [],
   userTimeContext?: UserTimeContext,
+  currentUserMessageId?: string,
 ): Content[] => {
   const parts: Part[] = [];
   const attachmentManifest =
@@ -67,6 +68,15 @@ export const buildContents = (
         `- timezone: ${userTimeContext.timezone}\n` +
         `- utc_offset_minutes: ${userTimeContext.utc_offset_minutes}\n` +
         "Use this as the user's local 'now' when resolving relative time phrases like today, tomorrow, and this evening.",
+    });
+  }
+
+  if (currentUserMessageId && currentUserMessageId.trim().length > 0) {
+    parts.push({
+      text:
+        "Current run message context:\n" +
+        `- current_user_message_id: ${currentUserMessageId}\n` +
+        "For store_memory_item calls derived from this user turn or this turn's attachments, set source_message_id to current_user_message_id.",
     });
   }
 

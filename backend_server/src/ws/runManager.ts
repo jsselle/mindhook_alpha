@@ -160,6 +160,7 @@ export class RunManager {
         msg.attachments,
         this.mapConversationToTurns(msg.context?.messages),
         msg.context?.user_time,
+        msg.user.message_id,
       );
 
       this.state = "STREAM_OUTPUT";
@@ -217,14 +218,14 @@ export class RunManager {
         reject(new Error("Tool call timeout"));
       }, timeout_ms);
 
-      this.pendingToolCalls.set(call_id, {
-        call_id,
-        tool: name,
-        args,
-        resolve,
-        reject,
-        timeoutId,
-      });
+        this.pendingToolCalls.set(call_id, {
+          call_id,
+          tool: name,
+          args,
+          resolve,
+          reject,
+          timeoutId,
+        });
 
       this.sendToolCall(call_id, name, args, timeout_ms);
     });

@@ -24,6 +24,7 @@ describe('Tool Dispatcher', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         (readApi.attachmentExists as jest.Mock).mockResolvedValue(true);
+        (readApi.messageExists as jest.Mock).mockResolvedValue(true);
         (readApi.getReminderById as jest.Mock).mockResolvedValue(null);
         (readApi.listReminders as jest.Mock).mockResolvedValue([]);
         (generateUUID as jest.Mock).mockReturnValue('generated-id-1');
@@ -181,6 +182,46 @@ describe('Tool Dispatcher', () => {
                 expect.objectContaining({ id: 'generated-id-1' })
             );
             expect(result).toEqual({ memory_item_id: 'generated-id-1' });
+        });
+
+        it('keeps source_message_id when it exists', async () => {
+            await executeToolCall('store_memory_item', {
+                memory_item_id: 'mem-1',
+                type: 'fact',
+                subject: 'user',
+                predicate: 'likes',
+                object: 'tea',
+                confidence: 0.9,
+                source_message_id: 'msg-1',
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(readApi.messageExists).toHaveBeenCalledWith({ message_id: 'msg-1' });
+            expect(writeApi.insertMemoryItem).toHaveBeenCalledWith(
+                expect.objectContaining({ source_message_id: 'msg-1' })
+            );
+        });
+
+        it('drops invalid source_message_id and still stores memory item', async () => {
+            (readApi.messageExists as jest.Mock).mockResolvedValueOnce(false);
+
+            await executeToolCall('store_memory_item', {
+                memory_item_id: 'mem-1',
+                type: 'fact',
+                subject: 'user',
+                predicate: 'likes',
+                object: 'tea',
+                confidence: 0.9,
+                source_message_id: 'missing-msg',
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+
+            expect(readApi.messageExists).toHaveBeenCalledWith({ message_id: 'missing-msg' });
+            expect(writeApi.insertMemoryItem).toHaveBeenCalledWith(
+                expect.objectContaining({ source_message_id: null })
+            );
         });
     });
 

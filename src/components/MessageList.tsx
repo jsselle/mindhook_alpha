@@ -212,7 +212,10 @@ export const MessageList: React.FC<MessageListProps> = ({
     };
 
     return (
-        <View style={styles.container}>
+        <View
+            style={styles.container}
+            {...(allowClearGesture ? panResponder.panHandlers : undefined)}
+        >
             <FlatList
                 ref={flatListRef}
                 data={messages}
@@ -235,11 +238,6 @@ export const MessageList: React.FC<MessageListProps> = ({
                     containerHeightRef.current = event.nativeEvent.layout.height;
                     updateScrollableState();
                 }}
-            />
-            <View
-                {...panResponder.panHandlers}
-                style={styles.gestureLayer}
-                pointerEvents={allowClearGesture ? 'auto' : 'none'}
             />
             {allowClearGesture && pullDistance > 0 && (
                 <View
@@ -264,9 +262,6 @@ export const MessageList: React.FC<MessageListProps> = ({
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-    },
-    gestureLayer: {
-        ...StyleSheet.absoluteFillObject,
     },
     listContent: {
         paddingVertical: 16,

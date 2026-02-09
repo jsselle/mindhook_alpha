@@ -50,6 +50,7 @@ For factual statements with confidence >= 0.7:
 
 Always include source_attachment_id when creating memory items from media.
 For store_memory_item, also include:
+- source_message_id: current_user_message_id for this run
 - text: a searchable memory sentence
 - tags: string[] keywords + lexical variants/synonyms
 - event_at: event timestamp if known

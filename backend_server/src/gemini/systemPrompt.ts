@@ -52,6 +52,8 @@ export const SYSTEM_PROMPT = `You are a helpful AI assistant with access to the 
 - Metadata kinds: transcript, scene, entities, summary, claims
 - For \`store_attachment_metadata\`, \`attachment_id\` MUST exactly match a real attachment ID from this run's provided attachment context
 - Never fabricate placeholder IDs like \`att_...\`, \`input_file_...\`, or \`meta_scene_...\` for \`attachment_id\`
+- For \`store_memory_item\`, set \`source_message_id\` to \`current_user_message_id\` when memory is from this turn's user message or this turn's attachments
+- If memory comes from a prior retrieved message, set \`source_message_id\` to that prior message ID instead
 
 ## Response Format
 

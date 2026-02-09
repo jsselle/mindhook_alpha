@@ -290,6 +290,62 @@ describe('RunManager', () => {
         expect(finalMsg.tool_summary).toEqual({ calls: 1, errors: 0 });
     });
 
+    it('does not inject source_message_id for store_memory_item when missing', async () => {
+        const socket = createMockSocket();
+        const { streamGeneration } = require('../src/gemini/client');
+
+        streamGeneration.mockImplementation(async (_: unknown, callbacks: {
+            onToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+            onComplete: (text: string) => void;
+        }) => {
+            const toolPromise = callbacks.onToolCall('store_memory_item', {
+                type: 'fact',
+                subject: 'user',
+                predicate: 'likes',
+                object: 'tea',
+                confidence: 0.9,
+                created_at: 1700000000000,
+                schema_version: '1',
+            });
+            await new Promise(resolve => setImmediate(resolve));
+
+            const outbound = (socket.send as jest.Mock).mock.calls.map(call => JSON.parse(call[0]));
+            const toolCall = outbound.find(msg => msg.type === 'tool_call');
+            expect(toolCall).toBeDefined();
+            expect(toolCall.args.source_message_id).toBeUndefined();
+
+            socket._trigger('message', JSON.stringify({
+                protocol_version: PROTOCOL_VERSION,
+                app_version: '1.0.0',
+                type: 'tool_result',
+                run_id: 'r1',
+                seq: 2,
+                call_id: toolCall.call_id,
+                tool: 'store_memory_item',
+                result: { ok: true, data: { memory_item_id: 'mem-1' } },
+            }));
+
+            await toolPromise;
+            callbacks.onComplete('Stored');
+        });
+
+        new RunManager(socket);
+
+        socket._trigger('message', JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            app_version: '1.0',
+            type: 'run_start',
+            run_id: 'r1',
+            seq: 1,
+            user: { message_id: 'm1', text: 'remember i like tea', created_at: Date.now() },
+            attachments: [],
+            context: { recent_message_count: 0 },
+        }));
+
+        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setImmediate(resolve));
+    });
+
     it('enforces a non-empty final assistant message when model output is blank', async () => {
         const socket = createMockSocket();
         const { streamGeneration } = require('../src/gemini/client');

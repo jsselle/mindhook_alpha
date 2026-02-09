@@ -86,6 +86,25 @@ describe('Gemini Client', () => {
             );
             expect((userParts[1] as { text?: string }).text).toContain('timezone: America/Los_Angeles');
         });
+
+        it('includes current user message id context when provided', () => {
+            const contents = buildContents(
+                'System',
+                'Remember this',
+                [],
+                [],
+                undefined,
+                'msg-current-1',
+            );
+
+            const userParts = contents[2].parts!;
+            const messageContextPart = userParts.find((part) =>
+                typeof (part as { text?: string }).text === 'string'
+                && ((part as { text?: string }).text as string).includes('current_user_message_id:')
+            ) as { text?: string } | undefined;
+            expect(messageContextPart?.text).toContain('current_user_message_id: msg-current-1');
+            expect(messageContextPart?.text).toContain('source_message_id');
+        });
     });
 
     describe('streamGeneration', () => {

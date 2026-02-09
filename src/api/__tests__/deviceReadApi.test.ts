@@ -9,6 +9,7 @@ import {
   listReminderEvents,
   listReminders,
   listUpcomingReminders,
+  messageExists,
   searchAttachments,
   searchMemory,
 } from "../deviceReadApi";
@@ -80,6 +81,26 @@ describe("DeviceReadAPI", () => {
       expect(mockDb?.getAllAsync).toHaveBeenCalledWith(
         expect.stringContaining("ORDER BY created_at DESC"),
         [20],
+      );
+    });
+  });
+
+  describe("messageExists", () => {
+    it("checks messages table by id", async () => {
+      const db = {
+        execAsync: jest.fn(),
+        runAsync: jest.fn(),
+        getAllAsync: jest.fn(),
+        getFirstAsync: jest.fn().mockResolvedValue({ id: "msg-1" }),
+      };
+      setDatabaseInstance(db as never);
+
+      const result = await messageExists({ message_id: "msg-1" });
+
+      expect(result).toBe(true);
+      expect(db.getFirstAsync).toHaveBeenCalledWith(
+        expect.stringContaining("FROM messages WHERE id = ?"),
+        ["msg-1"],
       );
     });
   });
