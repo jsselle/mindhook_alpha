@@ -5,9 +5,7 @@ declare const __DEV__: boolean;
 
 export const CONFIG = {
   /** WebSocket server URL - uses LAN host in dev, production server otherwise */
-  WS_URL: __DEV__
-    ? "ws://192.168.1.208:3000/ws"
-    : "wss://your-production-server.com/ws",
+  WS_URL: "wss://mindhook-alpha-947769583958.us-central1.run.app/ws",
 
   /** Maximum number of attachments per message */
   MAX_ATTACHMENTS: 6,
