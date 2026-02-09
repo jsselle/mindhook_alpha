@@ -206,7 +206,7 @@ describe('useWebSocket termination handling', () => {
         let resolvedPayload: unknown = null;
         let runPromise: Promise<unknown>;
         await act(async () => {
-            runPromise = hookState!.sendMessage('hello', [], [], async () => ({}));
+            runPromise = hookState!.sendMessage('user-1', 'hello', [], [], async () => ({}));
             await Promise.resolve();
         });
 
@@ -278,7 +278,7 @@ describe('useWebSocket termination handling', () => {
 
         let runPromise: Promise<unknown>;
         await act(async () => {
-            runPromise = hookState!.sendMessage('hello', [], [], async () => ({}));
+            runPromise = hookState!.sendMessage('user-1', 'hello', [], [], async () => ({}));
             await Promise.resolve();
         });
 
@@ -322,6 +322,7 @@ describe('useWebSocket termination handling', () => {
             throw new Error('Failed to schedule reminder: notification permission denied');
         });
         const runPromise = hookState!.sendMessage(
+            'user-1',
             'Remind me tomorrow',
             [],
             [],

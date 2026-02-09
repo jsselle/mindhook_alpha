@@ -100,6 +100,7 @@ export const ChatScreen: React.FC = () => {
   const [dbReady, setDbReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [retryPayload, setRetryPayload] = useState<{
+    userMessageId: string;
     text: string;
     attachments: AttachmentRow[];
   } | null>(null);
@@ -186,12 +187,14 @@ export const ChatScreen: React.FC = () => {
 
   const runBackend = useCallback(
     async (
+      userMessageId: string,
       text: string,
       attachments: AttachmentRow[],
       conversation: ConversationMessage[],
     ) => {
-      setRetryPayload({ text, attachments });
+      setRetryPayload({ userMessageId, text, attachments });
       const response = await sendMessage(
+        userMessageId,
         text,
         attachments,
         conversation,
@@ -254,7 +257,7 @@ export const ChatScreen: React.FC = () => {
         },
       ].flatMap(toConversationMessage);
 
-      await runBackend(draft.llm_text, [], conversation);
+      await runBackend(messageId, draft.llm_text, [], conversation);
     },
     [messages, runBackend, toConversationMessage],
   );
@@ -408,7 +411,7 @@ export const ChatScreen: React.FC = () => {
       ].flatMap(toConversationMessage);
 
       try {
-        await runBackend(backendText, attachmentsToSend, conversation);
+        await runBackend(messageId, backendText, attachmentsToSend, conversation);
         if (manualPending) {
           const reminder = await buildManualReminderContext(manualPending);
           await logReplySentToLlm({
@@ -690,6 +693,7 @@ export const ChatScreen: React.FC = () => {
         toConversationMessage,
       );
       await runBackend(
+        retryPayload.userMessageId,
         retryPayload.text,
         retryPayload.attachments,
         retryConversation,

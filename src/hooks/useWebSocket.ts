@@ -42,6 +42,7 @@ interface UseWebSocketResult {
     error: string | null;
     cancelActiveRun: () => void;
     sendMessage: (
+        userMessageId: string,
         text: string,
         attachments: AttachmentRow[],
         conversation: ConversationMessage[],
@@ -104,6 +105,7 @@ const getUserTimeContext = (): UserTimeContext => {
 };
 
 interface QueuedMessage {
+    userMessageId: string;
     text: string;
     attachments: AttachmentRow[];
     conversation: ConversationMessage[];
@@ -162,7 +164,6 @@ export const useWebSocket = (): UseWebSocketResult => {
                 seqRef.current = 0;
 
                 const runId = generateUUID();
-                const messageId = generateUUID();
 
                 let attachmentPayloads: Array<Record<string, unknown>> = [];
                 try {
@@ -246,7 +247,7 @@ export const useWebSocket = (): UseWebSocketResult => {
                             run_id: runId,
                             seq: ++seqRef.current,
                             user: {
-                                message_id: messageId,
+                                message_id: next.userMessageId,
                                 text: next.text,
                                 created_at: nowMs(),
                             },
@@ -420,13 +421,14 @@ export const useWebSocket = (): UseWebSocketResult => {
     }, []);
 
     const sendMessage = useCallback(async (
+        userMessageId: string,
         text: string,
         attachments: AttachmentRow[],
         conversation: ConversationMessage[],
         onToolCall: (payload: ToolCallPayload) => Promise<unknown>
     ): Promise<FinalResponsePayload | null> => {
         return new Promise<FinalResponsePayload | null>((resolve, reject) => {
-            queueRef.current.push({ text, attachments, conversation, onToolCall, resolve, reject });
+            queueRef.current.push({ userMessageId, text, attachments, conversation, onToolCall, resolve, reject });
 
             if (isProcessingRef.current) {
                 setActivityMessage(`Queued (${queueRef.current.length})`);
